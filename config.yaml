@@ -1,8 +1,9 @@
+# Any value can be overridden with EDURAG_<SECTION>_<FIELD>.
 mysql:
   host: localhost
   port: 3306
   username: root
-  password: "123456"
+  password: ""
   database: edurag
   charset: utf8mb4
 
@@ -10,7 +11,7 @@ redis:
   host: localhost
   port: 6379
   db: 0
-  password: 123456
+  password:
   decode_responses: true
 
 log:
@@ -20,3 +21,36 @@ log:
   retention: 14 days
   compression: zip
   enqueue: true
+
+milvus:
+  host: localhost
+  port: 19530
+  database: default
+  collection: edurag_knowledge
+
+llm:
+  provider: ollama
+  model: qwen3.5:2b
+  # Required by the OpenAI client but ignored by the local Ollama server.
+  api_key: ollama
+  base_url: http://localhost:11434/v1
+  temperature: 0.1
+
+rag:
+  parent_chunk_size: 1000
+  child_chunk_size: 300
+  chunk_overlap: 0.25
+  retrieval_k: 10
+  candidate_m: 3
+  customer_service_phone: 400-000-0000
+  # Local base model used to train the query classifier.
+  query_base_model: /Users/kimariyb/d/models/huggingface/bert-base-chinese
+  # Directory used to load or save the fine-tuned query classifier.
+  query_model_path: core/bert_query_classifier
+  query_training_data_path: finetuning_data.jsonl
+  embedding_model_path: /Users/kimariyb/d/models/huggingface/bge-m3
+  reranker_model_path: /Users/kimariyb/d/models/huggingface/bge-reranker-v2-m3
+  # Shared PyTorch device for embedding, reranking, and query classification.
+  model_device: mps
+  # The installed ModelScope version does not support the MPS device.
+  segmenter_device: cpu
