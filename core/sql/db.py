@@ -169,6 +169,65 @@ class MySQLClient:
 
     get_answer = fetch_faq_answer
 
+    def create_conversation_table(self, table_name: str = "conversations") -> None:
+        table = validate_identifier(table_name)
+        sql = f"""
+        CREATE TABLE IF NOT EXISTS `{table}` (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            session_id VARCHAR(255) NOT NULL,
+            question TEXT NOT NULL,
+            answer LONGTEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_conversations_session_created (session_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """
+        self._execute(sql, commit=True)
+        log.info("Ensured MySQL conversation table exists: table={}", table)
+
+    def append_conversation_turn(
+        self,
+        session_id: str,
+        question: str,
+        answer: str,
+        table_name: str = "conversations",
+    ) -> int:
+        table = validate_identifier(table_name)
+        cursor = self._execute(
+            f"INSERT INTO `{table}` (session_id, question, answer) VALUES (%s, %s, %s)",
+            (session_id, question, answer),
+        )
+        turn_id = int(cursor.lastrowid)
+        self._execute(
+            f"DELETE FROM `{table}` WHERE session_id = %s AND id NOT IN ("
+            f"SELECT id FROM (SELECT id FROM `{table}` WHERE session_id = %s "
+            "ORDER BY id DESC LIMIT %s) AS recent_turns)",
+            (session_id, session_id, 5),
+            commit=True,
+        )
+        return turn_id
+
+    def fetch_recent_conversations(
+        self,
+        session_id: str,
+        limit: int = 5,
+        table_name: str = "conversations",
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            raise ValueError("limit must be greater than 0")
+        table = validate_identifier(table_name)
+        rows = [dict(row) for row in self._fetch_all(
+            f"SELECT id, session_id, question, answer, created_at FROM `{table}` "
+            "WHERE session_id = %s ORDER BY id DESC LIMIT %s",
+            (session_id, limit),
+        )]
+        rows.reverse()
+        return rows
+
+    def clear_conversations(self, session_id: str, table_name: str = "conversations") -> bool:
+        table = validate_identifier(table_name)
+        self._execute(f"DELETE FROM `{table}` WHERE session_id = %s", (session_id,), commit=True)
+        return True
+
     def close(self) -> None:
         self.connection.close()
         log.info("Closed MySQL connection")
@@ -257,6 +316,3 @@ def _csv_value(
     if not required:
         return None
     raise ValueError(f"missing required csv column: {primary_key}, {fallback_key}")
-
-
-

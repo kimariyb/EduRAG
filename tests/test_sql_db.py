@@ -62,6 +62,39 @@ class ClosingCursor(FakeCursor):
         return False
 
 
+class ConversationStoreCursor(FakeCursor):
+    def __init__(self):
+        super().__init__()
+        self.next_id = 1
+
+    def execute(self, sql, params=None):
+        super().execute(sql, params)
+        if sql.lstrip().startswith("INSERT INTO `conversations`"):
+            session_id, question, answer = params
+            self.lastrowid = self.next_id
+            self.rows.append({
+                "id": self.next_id,
+                "session_id": session_id,
+                "question": question,
+                "answer": answer,
+            })
+            self.next_id += 1
+        elif "NOT IN" in sql:
+            session_id, _, limit = params
+            recent_ids = {
+                row["id"]
+                for row in sorted(self.rows, key=lambda row: row["id"], reverse=True)
+                if row["session_id"] == session_id
+            }
+            recent_ids = set(sorted(recent_ids, reverse=True)[:limit])
+            self.rows = [
+                row
+                for row in self.rows
+                if row["session_id"] != session_id or row["id"] in recent_ids
+            ]
+        return 1
+
+
 def test_mysql_client_create_table_executes_schema_sql():
     cursor = FakeCursor()
     connection = FakeConnection(cursor)
@@ -216,3 +249,49 @@ def test_mysql_client_auto_import_skips_seed_csv_when_table_has_data(tmp_path: P
     assert "CREATE TABLE IF NOT EXISTS `faq`" in create_cursor.executed[0][0]
     assert "SELECT id, subject, question, answer FROM `faq`" in existing_check_cursor.executed[0][0]
     assert connection.commit_count == 1
+
+
+def test_mysql_client_conversation_operations():
+    cursor = FakeCursor(lastrowid=8, rows=[
+        {"id": 4, "session_id": "s1", "question": "new", "answer": "b"},
+        {"id": 3, "session_id": "s1", "question": "old", "answer": "a"},
+    ])
+    connection = FakeConnection(cursor)
+    client = MySQLClient(connection=connection, auto_import=False)
+
+    client.create_conversation_table()
+    assert "CREATE TABLE IF NOT EXISTS `conversations`" in cursor.executed[0][0]
+    assert "INDEX idx_conversations_session_created" in cursor.executed[0][0]
+
+    assert client.append_conversation_turn("s1", "question", "answer") == 8
+    assert cursor.executed[1][1] == ("s1", "question", "answer")
+
+    assert client.fetch_recent_conversations("s1") == [
+        {"id": 3, "session_id": "s1", "question": "old", "answer": "a"},
+        {"id": 4, "session_id": "s1", "question": "new", "answer": "b"},
+    ]
+    assert cursor.executed[3][1] == ("s1", 5)
+
+    assert client.clear_conversations("s1") is True
+    assert cursor.executed[4][1] == ("s1",)
+    assert connection.commit_count == 3
+
+
+def test_mysql_client_keeps_only_five_newest_conversation_turns_per_session():
+    cursor = ConversationStoreCursor()
+    connection = FakeConnection(cursor)
+    client = MySQLClient(connection=connection, auto_import=False)
+
+    for turn in range(1, 6):
+        client.append_conversation_turn("s1", f"question {turn}", f"answer {turn}")
+    client.append_conversation_turn("s2", "other question", "other answer")
+    client.append_conversation_turn("s1", "question 6", "answer 6")
+
+    session_one_turns = [row["question"] for row in cursor.rows if row["session_id"] == "s1"]
+    assert session_one_turns == ["question 2", "question 3", "question 4", "question 5", "question 6"]
+    assert [row for row in cursor.rows if row["session_id"] == "s2"] == [{
+        "id": 6,
+        "session_id": "s2",
+        "question": "other question",
+        "answer": "other answer",
+    }]
