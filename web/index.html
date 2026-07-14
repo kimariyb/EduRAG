@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EduRAG · 教育问答系统</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">E</div>
+        <div class="brand-text">
+          <strong>EduRAG</strong>
+          <span>教育问答系统</span>
+        </div>
+        <span id="status-dot" class="status-dot" title="服务状态"></span>
+      </div>
+
+      <button id="new-chat" class="btn-new">+ 新建对话</button>
+
+      <div class="panel">
+        <h3>历史会话</h3>
+        <ul id="history-list" class="list"></ul>
+      </div>
+
+      <div class="panel">
+        <h3>常见问题</h3>
+        <ul id="faq-list" class="list"></ul>
+      </div>
+
+      <div class="sidebar-foot">
+        <span id="mode-label" class="mode-label">连接中…</span>
+      </div>
+    </aside>
+
+    <main class="chat">
+      <header class="chat-header">
+        <div>
+          <h2>智能答疑助手</h2>
+          <p id="session-hint">会话 ID：—</p>
+        </div>
+        <button id="clear-chat" class="btn-ghost">清空对话</button>
+      </header>
+
+      <section id="messages" class="messages">
+        <div class="empty-state">
+          <div class="empty-icon">💡</div>
+          <p>你好，我是 EduRAG 答疑助手。</p>
+          <p class="muted">提问会从 FAQ 知识库与 RAG 检索中为你作答。</p>
+        </div>
+      </section>
+
+      <footer class="composer">
+        <textarea id="input" rows="1" placeholder="输入你的问题，Enter 发送，Shift+Enter 换行…"></textarea>
+        <button id="send" class="btn-send">发送</button>
+      </footer>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
