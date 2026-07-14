@@ -12,7 +12,6 @@ def setup_logger(config: AppConfig) -> Any:
     log_file = Path(config.log.file)
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.remove()
     logger.add(
         log_file,
         level=config.log.level,

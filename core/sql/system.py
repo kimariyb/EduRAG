@@ -73,8 +73,11 @@ class MySqlQASystem:
 if __name__ == "__main__":
     # 用于测试 MySqlQASystem
     from base.config import load_config
+    from base.logger import setup_logger
 
     config = load_config()
+    setup_logger(config)
+
     mysql_client = MySQLClient(config)
     redis_client = RedisClient(config)
 

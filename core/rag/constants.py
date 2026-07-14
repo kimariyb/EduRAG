@@ -64,7 +64,7 @@ def normalize_query_category(category: str) -> str:
 
 DEFAULT_QUERY_MODEL = "bert-base-chinese"
 DEFAULT_QUERY_MODEL_PATH = "bert_query_classifier"
-DEFAULT_QUERY_TRAINING_DATA_PATH = "finetuning_data.jsonl"
+DEFAULT_QUERY_TRAINING_DATA_PATH = "data/finetuning_data.jsonl"
 DEFAULT_EMBEDDING_MODEL_PATH = "BAAI/bge-m3"
 DEFAULT_RERANKER_MODEL_PATH = "./bge/bge-reranker-large"
 DEFAULT_MODEL_DEVICE = "cpu"

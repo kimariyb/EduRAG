@@ -57,10 +57,13 @@ class MilvusConfig:
 @dataclass(frozen=True)
 class LLMConfig:
     provider: str = "ollama"
-    model: str = "qwen3.5:2b"
+    model: str = "qwen3.5:4b-mlx"
     api_key: str | None = "ollama"
     base_url: str = "http://localhost:11434/v1"
     temperature: float = 0.1
+    max_tokens: int = 384
+    reasoning_effort: str = "none"
+    stream: bool = True
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,7 @@ class RAGConfig:
     retrieval_k: int = 10
     candidate_m: int = 3
     customer_service_phone: str = "400-000-0000"
+    knowledge_base_path: str = "data/ai_data"
     query_base_model: str = "bert-base-chinese"
     query_model_path: str = "core/bert_query_classifier"
     query_training_data_path: str = "finetuning_data.jsonl"
@@ -81,6 +85,22 @@ class RAGConfig:
 
 
 @dataclass(frozen=True)
+class EvalConfig:
+    quality_threshold: int = 4
+    critique_max_retries: int = 3
+    test_samples_path: str = "eval/data/test_samples.jsonl"
+    critique_results_path: str = (
+        "eval/data/test_samples_critiqued.jsonl"
+    )
+    filtered_samples_path: str = "eval/data/test_samples_filtered.jsonl"
+    rag_predictions_path: str = "eval/data/rag_predictions.jsonl"
+    rag_evaluation_path: str = "eval/data/rag_evaluation.jsonl"
+    rag_summary_path: str = "eval/data/rag_evaluation_summary.json"
+    ragas_max_workers: int = 1
+    ragas_timeout: int = 180
+
+
+@dataclass(frozen=True)
 class AppConfig:
     mysql: MySQLConfig
     redis: RedisConfig
@@ -88,6 +108,7 @@ class AppConfig:
     milvus: MilvusConfig
     llm: LLMConfig
     rag: RAGConfig
+    eval: EvalConfig
     raw: dict[str, Any]
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -100,7 +121,7 @@ class AppConfig:
 
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppConfig:
-    config_path = Path(path)
+    config_path = Path(path).expanduser().resolve()
     if not config_path.exists():
         raise ConfigError(f"config file not found: {config_path}")
 
@@ -115,14 +136,17 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppConfig:
         raise ConfigError(f"missing required section: {names}")
 
     merged = _apply_environment_overrides(data)
+    _resolve_filesystem_paths(merged, config_path.parent)
     mysql = _mysql_config(_section(merged, "mysql"))
     redis = _redis_config(_section(merged, "redis"))
     log = _log_config(_section(merged, "log"))
     milvus = _milvus_config(_section(merged, "milvus"))
     llm = _llm_config(_section(merged, "llm"))
     rag = _rag_config(_section(merged, "rag"))
+    eval_config = _eval_config(_section(merged, "eval"))
     _validate_llm_config(llm)
     _validate_rag_config(rag)
+    _validate_eval_config(eval_config)
 
     normalized = dict(merged)
     normalized.update(
@@ -133,6 +157,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppConfig:
             "milvus": asdict(milvus),
             "llm": asdict(llm),
             "rag": asdict(rag),
+            "eval": asdict(eval_config),
         }
     )
     return AppConfig(
@@ -142,6 +167,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppConfig:
         milvus=milvus,
         llm=llm,
         rag=rag,
+        eval=eval_config,
         raw=normalized,
     )
 
@@ -160,7 +186,15 @@ def _apply_environment_overrides(data: dict[str, Any]) -> dict[str, Any]:
         key: dict(value) if isinstance(value, dict) else value
         for key, value in data.items()
     }
-    for section in ("mysql", "redis", "log", "milvus", "llm", "rag"):
+    for section in (
+        "mysql",
+        "redis",
+        "log",
+        "milvus",
+        "llm",
+        "rag",
+        "eval",
+    ):
         values = result.setdefault(section, {})
         if not isinstance(values, dict):
             continue
@@ -173,6 +207,44 @@ def _apply_environment_overrides(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _resolve_filesystem_paths(
+    data: dict[str, Any],
+    config_directory: Path,
+) -> None:
+    path_fields = {
+        "log": {"file": "logs/app.log"},
+        "rag": {
+            "knowledge_base_path": "data/ai_data",
+            "query_model_path": "core/bert_query_classifier",
+            "query_training_data_path": "finetuning_data.jsonl",
+        },
+        "eval": {
+            "test_samples_path": "eval/data/test_samples.jsonl",
+            "critique_results_path": (
+                "eval/data/test_samples_critiqued.jsonl"
+            ),
+            "filtered_samples_path": (
+                "eval/data/test_samples_filtered.jsonl"
+            ),
+            "rag_predictions_path": "eval/data/rag_predictions.jsonl",
+            "rag_evaluation_path": "eval/data/rag_evaluation.jsonl",
+            "rag_summary_path": (
+                "eval/data/rag_evaluation_summary.json"
+            ),
+        },
+    }
+    for section, fields in path_fields.items():
+        values = data.setdefault(section, {})
+        if not isinstance(values, dict):
+            continue
+        for field_name, default in fields.items():
+            configured_path = Path(str(values.get(field_name) or default))
+            configured_path = configured_path.expanduser()
+            if not configured_path.is_absolute():
+                configured_path = config_directory / configured_path
+            values[field_name] = str(configured_path.resolve())
+
+
 def _section_field_names(section: str) -> tuple[str, ...]:
     config_type = {
         "mysql": MySQLConfig,
@@ -181,6 +253,7 @@ def _section_field_names(section: str) -> tuple[str, ...]:
         "milvus": MilvusConfig,
         "llm": LLMConfig,
         "rag": RAGConfig,
+        "eval": EvalConfig,
     }[section]
     return tuple(config_type.__dataclass_fields__)
 
@@ -243,7 +316,7 @@ def _llm_config(values: dict[str, Any]) -> LLMConfig:
 
     return LLMConfig(
         provider=provider,
-        model=str(values.get("model") or "qwen3.5:2b"),
+        model=str(values.get("model") or "qwen3.5:4b-mlx"),
         api_key=normalized_api_key,
         base_url=str(
             values.get("base_url") or "http://localhost:11434/v1"
@@ -253,6 +326,15 @@ def _llm_config(values: dict[str, Any]) -> LLMConfig:
             0.1,
             "llm.temperature",
         ),
+        max_tokens=_as_int(
+            values.get("max_tokens"),
+            384,
+            "llm.max_tokens",
+        ),
+        reasoning_effort=str(
+            values.get("reasoning_effort") or "none"
+        ).lower(),
+        stream=_as_bool(values.get("stream"), True, "llm.stream"),
     )
 
 
@@ -286,6 +368,9 @@ def _rag_config(values: dict[str, Any]) -> RAGConfig:
         customer_service_phone=str(
             values.get("customer_service_phone") or "400-000-0000"
         ),
+        knowledge_base_path=str(
+            values.get("knowledge_base_path") or "data/ai_data"
+        ),
         query_base_model=str(
             values.get("query_base_model") or "bert-base-chinese"
         ),
@@ -312,6 +397,55 @@ def _rag_config(values: dict[str, Any]) -> RAGConfig:
     )
 
 
+def _eval_config(values: dict[str, Any]) -> EvalConfig:
+    return EvalConfig(
+        quality_threshold=_as_int(
+            values.get("quality_threshold"),
+            4,
+            "eval.quality_threshold",
+        ),
+        critique_max_retries=_as_int(
+            values.get("critique_max_retries"),
+            3,
+            "eval.critique_max_retries",
+        ),
+        test_samples_path=str(
+            values.get("test_samples_path")
+            or "eval/data/test_samples.jsonl"
+        ),
+        critique_results_path=str(
+            values.get("critique_results_path")
+            or "eval/data/test_samples_critiqued.jsonl"
+        ),
+        filtered_samples_path=str(
+            values.get("filtered_samples_path")
+            or "eval/data/test_samples_filtered.jsonl"
+        ),
+        rag_predictions_path=str(
+            values.get("rag_predictions_path")
+            or "eval/data/rag_predictions.jsonl"
+        ),
+        rag_evaluation_path=str(
+            values.get("rag_evaluation_path")
+            or "eval/data/rag_evaluation.jsonl"
+        ),
+        rag_summary_path=str(
+            values.get("rag_summary_path")
+            or "eval/data/rag_evaluation_summary.json"
+        ),
+        ragas_max_workers=_as_int(
+            values.get("ragas_max_workers"),
+            1,
+            "eval.ragas_max_workers",
+        ),
+        ragas_timeout=_as_int(
+            values.get("ragas_timeout"),
+            180,
+            "eval.ragas_timeout",
+        ),
+    )
+
+
 def _validate_rag_config(config: RAGConfig) -> None:
     if config.parent_chunk_size <= 0:
         raise ConfigError("rag.parent_chunk_size must be greater than 0")
@@ -334,6 +468,32 @@ def _validate_rag_config(config: RAGConfig) -> None:
 def _validate_llm_config(config: LLMConfig) -> None:
     if not 0 <= config.temperature <= 2:
         raise ConfigError("llm.temperature must be between 0 and 2")
+    if config.max_tokens <= 0:
+        raise ConfigError("llm.max_tokens must be greater than 0")
+    allowed_reasoning_efforts = {"none", "low", "medium", "high"}
+    if config.reasoning_effort not in allowed_reasoning_efforts:
+        allowed_values = ", ".join(sorted(allowed_reasoning_efforts))
+        raise ConfigError(
+            "llm.reasoning_effort must be one of: "
+            f"{allowed_values}"
+        )
+
+
+def _validate_eval_config(config: EvalConfig) -> None:
+    if not 1 <= config.quality_threshold <= 5:
+        raise ConfigError(
+            "eval.quality_threshold must be between 1 and 5"
+        )
+    if config.critique_max_retries <= 0:
+        raise ConfigError(
+            "eval.critique_max_retries must be greater than 0"
+        )
+    if config.ragas_max_workers <= 0:
+        raise ConfigError(
+            "eval.ragas_max_workers must be greater than 0"
+        )
+    if config.ragas_timeout <= 0:
+        raise ConfigError("eval.ragas_timeout must be greater than 0")
 
 
 def _as_int(value: Any, default: int, name: str) -> int:

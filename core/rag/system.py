@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 
@@ -26,10 +28,30 @@ from core.rag.constants import (
 from core.rag.prompt import RAGPrompts
 from core.rag.query import QueryClassifier
 from core.rag.retrieval import StrategySelector
+from core.rag.parser import parse_document_from_dir
+from core.rag.vector import VectorStore
 
 
 log = logger.bind(module=__name__)
 LLMCallable = Callable[[str], str]
+
+
+@dataclass(frozen=True)
+class RAGAnswer:
+    """A final answer together with the retrieval decisions that produced it."""
+
+    answer: str
+    category: str
+    strategy: str | None
+    documents: tuple[Document, ...]
+
+
+@dataclass(frozen=True)
+class _PreparedRAGQuery:
+    prompt: str
+    category: str
+    strategy: str | None
+    documents: tuple[Document, ...]
 
 
 class RAGSystem:
@@ -224,56 +246,119 @@ class RAGSystem:
         )
         return context_documents
 
+    def _prepare_answer_prompt(
+        self,
+        query: str,
+        source_filter: str | None = None,
+    ) -> _PreparedRAGQuery:
+        """Classify, retrieve, and format the final answer prompt."""
+        category = normalize_query_category(
+            self.query_classifier.predict_category(query)
+        )
+        log.info(
+            "RAG query classified: category={}",
+            QUERY_CATEGORY_LOG_NAMES.get(category, "unknown"),
+        )
+
+        context_documents: list[Document] = []
+        selected_strategy: str | None = None
+        if category == GENERAL_KNOWLEDGE_CATEGORY:
+            log.info("Using direct LLM path for general knowledge query")
+        else:
+            try:
+                selected_strategy = normalize_retrieval_strategy(
+                    self.strategy_selector.select_strategy(query)
+                )
+                context_documents = self.retrieve_and_merge(
+                    query,
+                    source_filter=source_filter,
+                    strategy=selected_strategy,
+                )
+            except Exception:
+                log.exception("RAG retrieval failed; using empty context")
+            log.info(
+                "RAG context prepared: documents={}",
+                len(context_documents),
+            )
+
+        context = "\n\n".join(
+            document.page_content for document in context_documents
+        )
+        prompt = self.rag_prompt.format(
+            context=context,
+            question=query,
+            phone=self.customer_service_phone,
+        )
+        return _PreparedRAGQuery(
+            prompt=prompt,
+            category=category,
+            strategy=selected_strategy,
+            documents=tuple(context_documents),
+        )
+
+    def generate_answer_with_trace(
+        self,
+        query: str,
+        source_filter: str | None = None,
+    ) -> RAGAnswer:
+        """Generate one answer and retain the actual retrieval trace."""
+        start = perf_counter()
+        log.info("RAG query started: source_filter={}", source_filter)
+        prepared = self._prepare_answer_prompt(query, source_filter)
+        try:
+            try:
+                answer = self.llm(prepared.prompt)
+            except Exception:
+                log.exception("Final answer generation failed")
+                answer = self._fallback_answer(prepared.category)
+            return RAGAnswer(
+                answer=answer,
+                category=prepared.category,
+                strategy=prepared.strategy,
+                documents=prepared.documents,
+            )
+        finally:
+            duration_ms = (perf_counter() - start) * 1000
+            log.info("RAG query finished: duration_ms={:.3f}", duration_ms)
+
     def generate_answer(
         self,
         query: str,
         source_filter: str | None = None,
     ) -> str:
+        return self.generate_answer_with_trace(
+            query,
+            source_filter,
+        ).answer
+
+    def generate_answer_stream(
+        self,
+        query: str,
+        source_filter: str | None = None,
+    ) -> Iterator[str]:
+        """Yield the final answer while keeping internal RAG calls synchronous."""
         start = perf_counter()
-        log.info("RAG query started: source_filter={}", source_filter)
+        log.info("RAG streaming query started: source_filter={}", source_filter)
         try:
-            category = normalize_query_category(
-                self.query_classifier.predict_category(query)
-            )
-            log.info(
-                "RAG query classified: category={}",
-                QUERY_CATEGORY_LOG_NAMES.get(category, "unknown"),
-            )
-
-            context_documents: list[Document] = []
-            if category == GENERAL_KNOWLEDGE_CATEGORY:
-                log.info("Using direct LLM path for general knowledge query")
-            else:
-                try:
-                    strategy = self.strategy_selector.select_strategy(query)
-                    context_documents = self.retrieve_and_merge(
-                        query,
-                        source_filter=source_filter,
-                        strategy=strategy,
-                    )
-                except Exception:
-                    log.exception("RAG retrieval failed; using empty context")
-                log.info(
-                    "RAG context prepared: documents={}",
-                    len(context_documents),
-                )
-
-            context = "\n\n".join(
-                document.page_content for document in context_documents
-            )
-            prompt = self.rag_prompt.format(
-                context=context,
-                question=query,
-                phone=self.customer_service_phone,
+            prepared = self._prepare_answer_prompt(
+                query,
+                source_filter,
             )
             try:
-                return self.llm(prompt)
+                stream = getattr(self.llm, "stream", None)
+                if callable(stream):
+                    yield from stream(prepared.prompt)
+                else:
+                    yield self.llm(prepared.prompt)
             except Exception:
-                log.exception("Final answer generation failed")
-                return self._fallback_answer(category)
+                log.exception("Streaming final answer generation failed")
+                yield self._fallback_answer(prepared.category)
         finally:
             duration_ms = (perf_counter() - start) * 1000
-            log.info("RAG query finished: duration_ms={:.3f}", duration_ms)
+            log.info(
+                "RAG streaming query finished: duration_ms={:.3f}",
+                duration_ms,
+            )
 
     def _fallback_answer(self, category: str) -> str:
         category_name = (
@@ -286,3 +371,70 @@ class RAGSystem:
             "Please contact customer service at "
             f"{self.customer_service_phone}."
         )
+
+
+def main() -> None:
+    """Build the local RAG workflow and start an interactive query loop."""
+    config = load_config()
+
+    model_path = Path(config.rag.query_model_path)
+    should_train_classifier = not model_path.is_dir()
+    query_classifier = QueryClassifier.from_config(config)
+    if should_train_classifier:
+        log.info(
+            "Fine-tuned query classifier not found; training started: path={}",
+            model_path,
+        )
+        query_classifier.train_model()
+
+    knowledge_base_path = Path(config.rag.knowledge_base_path)
+    documents = parse_document_from_dir(
+        knowledge_base_path,
+        config=config,
+    )
+    vector_store = VectorStore.from_config(config)
+    vector_store.add_documents(documents)
+
+    rag_system = RAGSystem.from_config(
+        config,
+        vector_store=vector_store,
+        query_classifier=query_classifier,
+    )
+    source_filter = knowledge_base_path.name.removesuffix("_data")
+    log.info(
+        "RAG workflow ready: documents={}, source_filter={}",
+        len(documents),
+        source_filter,
+    )
+
+    while True:
+        try:
+            query = input("Query (type 'exit' to quit): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            log.info("RAG workflow stopped")
+            break
+
+        if query.lower() in {"exit", "quit"}:
+            log.info("RAG workflow stopped")
+            break
+        if not query:
+            continue
+
+        if config.llm.stream:
+            for fragment in rag_system.generate_answer_stream(
+                query,
+                source_filter=source_filter,
+            ):
+                print(fragment, end="", flush=True)
+            print()
+        else:
+            answer = rag_system.generate_answer(
+                query,
+                source_filter=source_filter,
+            )
+            print(answer)
+
+
+if __name__ == "__main__":
+    main()

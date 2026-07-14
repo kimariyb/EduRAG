@@ -4,6 +4,7 @@ from pathlib import Path
 
 from base.config import AppConfig, load_config
 from base.logger import logger, setup_logger
+from core.sql.system import MySqlQASystem, MySQLClient
 
 
 def initialize_app(config_path: str | Path | None = None) -> AppConfig:

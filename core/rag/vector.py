@@ -204,19 +204,15 @@ class VectorStore:
                     "document metadata must include parent_id and parent_content"
                 )
 
-            text_hash = hashlib.md5(
-                document.page_content.encode("utf-8"),
-                usedforsecurity=False,
-            ).hexdigest()
             data.append(
                 {
-                    "id": text_hash,
+                    "id": self._document_id(document),
                     "text": document.page_content,
                     "dense_vector": self._dense_vector(
                         embeddings["dense"][index]
                     ),
                     "sparse_vector": self._sparse_vector(
-                        embeddings["sparse"].getrow(index)
+                        embeddings["sparse"][index : index + 1]
                     ),
                     "parent_id": str(parent_id),
                     "parent_content": str(parent_content),
@@ -246,7 +242,7 @@ class VectorStore:
         query_embeddings = self.embedding_function([query])
         dense_query_vector = self._dense_vector(query_embeddings["dense"][0])
         sparse_query_vector = self._sparse_vector(
-            query_embeddings["sparse"].getrow(0)
+            query_embeddings["sparse"][0:1]
         )
         filter_expression = self._source_filter_expression(source_filter)
 
@@ -306,6 +302,23 @@ class VectorStore:
     def _dense_vector(vector: Any) -> list[float]:
         values = vector.tolist() if hasattr(vector, "tolist") else vector
         return [float(value) for value in values]
+
+    @staticmethod
+    def _document_id(document: Document) -> str:
+        identity = json.dumps(
+            [
+                document.metadata.get("source"),
+                document.metadata.get("id"),
+                document.metadata.get("parent_id"),
+                document.page_content,
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return hashlib.md5(
+            identity.encode("utf-8"),
+            usedforsecurity=False,
+        ).hexdigest()
 
     @staticmethod
     def _sparse_vector(row: Any) -> dict[int, float]:

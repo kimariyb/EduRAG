@@ -49,6 +49,8 @@ class StrategySelector:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=self.config.llm.temperature,
+                max_tokens=self.config.llm.max_tokens,
+                reasoning_effort=self.config.llm.reasoning_effort,
             )
             if not completion.choices:
                 log.warning("Strategy LLM returned no choices; using direct retrieval")

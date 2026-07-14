@@ -1,0 +1,26 @@
+{
+  "input_predictions": 104,
+  "eligible_predictions": 6,
+  "excluded_predictions": 98,
+  "completed": 6,
+  "failed": 0,
+  "metrics": {
+    "context_precision": {
+      "mean": 0.6667,
+      "count": 6
+    },
+    "context_recall": {
+      "mean": 0.6667,
+      "count": 6
+    },
+    "answer_relevancy": {
+      "mean": 0.8396,
+      "count": 6
+    },
+    "faithfulness": {
+      "mean": 0.9577,
+      "count": 6
+    }
+  },
+  "overall_mean": 0.7826
+}

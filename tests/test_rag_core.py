@@ -8,7 +8,9 @@ import numpy as np
 import pytest
 import torch
 from langchain_core.documents import Document
+from scipy.sparse import csr_array
 
+import core.rag.system as rag_system_module
 from base.config import load_config
 from core.rag.constants import (
     BACKTRACKING_RETRIEVAL_STRATEGY,
@@ -99,15 +101,20 @@ class FakeVectorStore:
         return [Document(page_content=f"context:{query}")]
 
 
-class SparseRows:
-    def __init__(self, count):
-        self.count = count
+class FakeStreamingLLM:
+    def __init__(self, *, sync_response="generated query", chunks=None):
+        self.sync_response = sync_response
+        self.chunks = chunks or ["streamed ", "answer"]
+        self.sync_calls = []
+        self.stream_calls = []
 
-    def getrow(self, index):
-        return SimpleNamespace(
-            indices=np.array([index, index + 1]),
-            data=np.array([0.25, 0.75]),
-        )
+    def __call__(self, prompt):
+        self.sync_calls.append(prompt)
+        return self.sync_response
+
+    def stream(self, prompt):
+        self.stream_calls.append(prompt)
+        yield from self.chunks
 
 
 class FakeEmbedding:
@@ -116,7 +123,12 @@ class FakeEmbedding:
     def __call__(self, texts):
         return {
             "dense": np.array([[index, index + 1] for index in range(len(texts))]),
-            "sparse": SparseRows(len(texts)),
+            "sparse": csr_array(
+                [
+                    [0.25, 0.75]
+                    for _ in texts
+                ]
+            ),
         }
 
 
@@ -278,19 +290,27 @@ def test_strategy_selector_normalizes_llm_output():
             )
         ]
     )
-    create = lambda **kwargs: completion
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return completion
+
     client = SimpleNamespace(
         chat=SimpleNamespace(
             completions=SimpleNamespace(create=create),
         )
     )
+    config = load_config()
     selector = StrategySelector(
-        load_config(),
+        config,
         client=client,
         model="test-model",
     )
 
     assert selector.select_strategy("复杂问题") == SUBQUERY_RETRIEVAL_STRATEGY
+    assert calls[0]["max_tokens"] == config.llm.max_tokens
+    assert calls[0]["reasoning_effort"] == config.llm.reasoning_effort
 
 
 def test_chat_llm_uses_typed_llm_config():
@@ -314,16 +334,57 @@ def test_chat_llm_uses_typed_llm_config():
     assert llm("prompt") == "answer"
     assert calls[0]["model"] == config.llm.model
     assert calls[0]["temperature"] == config.llm.temperature
+    assert calls[0]["max_tokens"] == config.llm.max_tokens
+    assert calls[0]["reasoning_effort"] == config.llm.reasoning_effort
+
+
+def test_chat_llm_streams_non_empty_content_fragments():
+    chunks = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="first "))]
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=None))]
+        ),
+        SimpleNamespace(choices=[]),
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content="second"))]
+        ),
+    ]
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return iter(chunks)
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=create),
+        )
+    )
+    config = load_config()
+    llm = ChatLLM(config, client=client)
+
+    assert list(llm.stream("prompt")) == ["first ", "second"]
+    assert calls[0]["stream"] is True
+    assert calls[0]["max_tokens"] == config.llm.max_tokens
+    assert calls[0]["reasoning_effort"] == config.llm.reasoning_effort
 
 
 def test_openai_compatible_client_uses_ollama_config(monkeypatch):
     calls = {}
+    http_client_calls = []
     openai_module = ModuleType("openai")
+
+    class FakeDefaultHttpxClient:
+        def __init__(self, **kwargs):
+            http_client_calls.append(kwargs)
 
     class FakeOpenAI:
         def __init__(self, **kwargs):
             calls.update(kwargs)
 
+    openai_module.DefaultHttpxClient = FakeDefaultHttpxClient
     openai_module.OpenAI = FakeOpenAI
     monkeypatch.setitem(sys.modules, "openai", openai_module)
     config = load_config()
@@ -331,10 +392,10 @@ def test_openai_compatible_client_uses_ollama_config(monkeypatch):
     client = create_openai_client(config)
 
     assert isinstance(client, FakeOpenAI)
-    assert calls == {
-        "api_key": "ollama",
-        "base_url": "http://localhost:11434/v1",
-    }
+    assert calls["api_key"] == "ollama"
+    assert calls["base_url"] == "http://localhost:11434/v1"
+    assert isinstance(calls["http_client"], FakeDefaultHttpxClient)
+    assert http_client_calls == [{"trust_env": False}]
 
 
 def test_rag_system_general_query_skips_retrieval():
@@ -370,6 +431,88 @@ def test_rag_system_returns_english_fallback_answer():
     )
 
 
+def test_rag_system_streams_final_answer_without_retrieval_for_general_query():
+    store = FakeVectorStore()
+    llm = FakeStreamingLLM()
+    selector = StaticStrategySelector()
+    system = RAGSystem(
+        store,
+        llm,
+        query_classifier=StaticQueryClassifier(GENERAL_KNOWLEDGE_CATEGORY),
+        strategy_selector=selector,
+    )
+
+    assert list(system.generate_answer_stream("general question")) == [
+        "streamed ",
+        "answer",
+    ]
+    assert store.calls == []
+    assert selector.calls == []
+    assert llm.sync_calls == []
+    assert len(llm.stream_calls) == 1
+
+
+def test_rag_system_streaming_keeps_hyde_generation_synchronous():
+    store = FakeVectorStore()
+    llm = FakeStreamingLLM(sync_response="generated search query")
+    system = RAGSystem(
+        store,
+        llm,
+        query_classifier=StaticQueryClassifier(
+            PROFESSIONAL_CONSULTATION_CATEGORY
+        ),
+        strategy_selector=StaticStrategySelector(HYDE_RETRIEVAL_STRATEGY),
+        retrieval_k=4,
+    )
+
+    assert "".join(
+        system.generate_answer_stream(
+            "course question",
+            source_filter="ai",
+        )
+    ) == "streamed answer"
+    assert len(llm.sync_calls) == 1
+    assert len(llm.stream_calls) == 1
+    assert store.calls == [("generated search query", 4, "ai")]
+    assert "context:generated search query" in llm.stream_calls[0]
+
+
+def test_rag_system_streaming_supports_synchronous_llm_callables():
+    system = RAGSystem(
+        FakeVectorStore(),
+        lambda prompt: "synchronous answer",
+        query_classifier=StaticQueryClassifier(GENERAL_KNOWLEDGE_CATEGORY),
+        strategy_selector=StaticStrategySelector(),
+    )
+
+    assert list(system.generate_answer_stream("question")) == [
+        "synchronous answer"
+    ]
+
+
+def test_rag_system_streaming_yields_english_fallback_on_generation_error():
+    class FailingStreamingLLM:
+        def __call__(self, prompt):
+            raise AssertionError("the synchronous path must not be used")
+
+        def stream(self, prompt):
+            raise RuntimeError("unavailable")
+            yield
+
+    system = RAGSystem(
+        FakeVectorStore(),
+        FailingStreamingLLM(),
+        query_classifier=StaticQueryClassifier(GENERAL_KNOWLEDGE_CATEGORY),
+        strategy_selector=StaticStrategySelector(),
+        customer_service_phone="12345",
+    )
+
+    assert list(system.generate_answer_stream("question")) == [
+        "Sorry, we could not process your general knowledge question. "
+        "Please contact customer service at 12345."
+    ]
+
+
 def test_rag_system_from_config_uses_rag_settings():
     config = load_config()
     store = FakeVectorStore()
@@ -390,6 +533,88 @@ def test_rag_system_from_config_uses_rag_settings():
     assert system.retrieval_k == config.rag.retrieval_k
     assert system.candidate_m == config.rag.candidate_m
     assert system.customer_service_phone == config.rag.customer_service_phone
+
+
+@pytest.mark.parametrize(
+    ("stream_enabled", "expected_method"),
+    [(True, "stream"), (False, "sync")],
+)
+def test_system_main_builds_and_runs_complete_workflow(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    stream_enabled,
+    expected_method,
+):
+    knowledge_base = tmp_path / "ai_data"
+    knowledge_base.mkdir()
+    model_path = tmp_path / "query_classifier"
+    config = load_config()
+    config = replace(
+        config,
+        llm=replace(config.llm, stream=stream_enabled),
+        rag=replace(
+            config.rag,
+            knowledge_base_path=str(knowledge_base),
+            query_model_path=str(model_path),
+        ),
+    )
+    calls = {
+        "trained": 0,
+        "indexed": [],
+        "queries": [],
+    }
+    classifier = SimpleNamespace(
+        train_model=lambda: calls.__setitem__("trained", 1)
+    )
+    vector_store = SimpleNamespace(
+        add_documents=lambda documents: calls["indexed"].extend(documents)
+    )
+    rag_system = SimpleNamespace(
+        generate_answer=lambda query, source_filter=None: (
+            calls["queries"].append(("sync", query, source_filter))
+            or "answer"
+        ),
+        generate_answer_stream=lambda query, source_filter=None: (
+            calls["queries"].append(("stream", query, source_filter))
+            or iter(["ans", "wer"])
+        ),
+    )
+    documents = [Document(page_content="knowledge")]
+    inputs = iter(["course question", "exit"])
+
+    monkeypatch.setattr(rag_system_module, "load_config", lambda: config)
+    monkeypatch.setattr(rag_system_module, "setup_logger", lambda config: None)
+    monkeypatch.setattr(
+        rag_system_module,
+        "parse_document_from_dir",
+        lambda path, config=None: documents,
+    )
+    monkeypatch.setattr(
+        rag_system_module,
+        "QueryClassifier",
+        SimpleNamespace(from_config=lambda config: classifier),
+    )
+    monkeypatch.setattr(
+        rag_system_module,
+        "VectorStore",
+        SimpleNamespace(from_config=lambda config: vector_store),
+    )
+    monkeypatch.setattr(
+        rag_system_module,
+        "RAGSystem",
+        SimpleNamespace(from_config=lambda config, **kwargs: rag_system),
+    )
+    monkeypatch.setattr("builtins.input", lambda prompt: next(inputs))
+
+    rag_system_module.main()
+
+    assert calls["trained"] == 1
+    assert calls["indexed"] == documents
+    assert calls["queries"] == [
+        (expected_method, "course question", "ai")
+    ]
+    assert capsys.readouterr().out == "answer\n"
 
 
 def test_rag_system_direct_retrieval_propagates_source_filter():
@@ -414,6 +639,34 @@ def test_rag_system_direct_retrieval_propagates_source_filter():
     assert system.generate_answer("专业问题", source_filter="ai") == "rag answer"
     assert store.calls == [("专业问题", 7, "ai")]
     assert "context:专业问题" in captured_prompts[-1]
+
+
+def test_rag_system_returns_answer_with_actual_retrieval_trace():
+    store = FakeVectorStore()
+    system = RAGSystem(
+        store,
+        lambda prompt: "traced answer",
+        query_classifier=StaticQueryClassifier(
+            PROFESSIONAL_CONSULTATION_CATEGORY
+        ),
+        strategy_selector=StaticStrategySelector(
+            DIRECT_RETRIEVAL_STRATEGY
+        ),
+        retrieval_k=4,
+    )
+
+    result = system.generate_answer_with_trace(
+        "课程问题",
+        source_filter="ai",
+    )
+
+    assert result.answer == "traced answer"
+    assert result.category == PROFESSIONAL_CONSULTATION_CATEGORY
+    assert result.strategy == DIRECT_RETRIEVAL_STRATEGY
+    assert [document.page_content for document in result.documents] == [
+        "context:课程问题"
+    ]
+    assert store.calls == [("课程问题", 4, "ai")]
 
 
 @pytest.mark.parametrize(
@@ -506,6 +759,41 @@ def test_vector_store_upserts_documents_and_reranks_search_results():
     assert VectorStore._source_filter_expression('ai"course') == (
         'source == "ai\\"course"'
     )
+
+
+def test_vector_store_disambiguates_duplicate_text_with_chunk_metadata():
+    client = FakeMilvusClient()
+    store = VectorStore(
+        "knowledge",
+        "localhost",
+        19530,
+        "default",
+        client=client,
+        embedding_function=FakeEmbedding(),
+        reranker=FakeReranker(),
+        auto_prepare=False,
+    )
+    documents = [
+        Document(
+            page_content="repeated boundary text",
+            metadata={
+                "id": f"doc_0_parent_{index}_child_0",
+                "parent_id": f"doc_0_parent_{index}",
+                "parent_content": f"parent {index}",
+                "source": "ai",
+                "timestamp": "now",
+            },
+        )
+        for index in range(2)
+    ]
+
+    store.add_documents(documents)
+    first_ids = [row["id"] for row in client.upsert_calls[0]["data"]]
+    store.add_documents(documents)
+    second_ids = [row["id"] for row in client.upsert_calls[1]["data"]]
+
+    assert len(set(first_ids)) == len(documents)
+    assert second_ids == first_ids
 
 
 def test_vector_store_from_config_uses_milvus_and_rag_settings():
