@@ -109,6 +109,7 @@ class AppConfig:
     llm: LLMConfig
     rag: RAGConfig
     eval: EvalConfig
+    admin_token: str | None
     raw: dict[str, Any]
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -168,6 +169,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppConfig:
         llm=llm,
         rag=rag,
         eval=eval_config,
+        admin_token=os.environ.get("EDURAG_ADMIN_TOKEN"),
         raw=normalized,
     )
 

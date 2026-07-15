@@ -1,6 +1,9 @@
+import os
 from pathlib import Path
 
+from api import deps
 from base.logger import logger
+import main as main_module
 from main import initialize_app
 
 
@@ -40,3 +43,24 @@ log:
     assert config.log.file == str(log_path)
     assert log_path.exists()
     assert "shared logger configured from main" in log_path.read_text(encoding="utf-8")
+
+
+def test_main_sets_mock_mode_before_initializing(monkeypatch):
+    calls = []
+    monkeypatch.delenv("EDURAG_API_MOCK", raising=False)
+    monkeypatch.setattr(
+        main_module,
+        "initialize_system",
+        lambda: calls.append(os.environ.get("EDURAG_API_MOCK")),
+    )
+    monkeypatch.setattr(main_module, "run_server", lambda **_: None)
+    monkeypatch.setattr(
+        deps,
+        "configure_application",
+        lambda config: None,
+        raising=False,
+    )
+
+    main_module.main(["--mock"])
+
+    assert calls == ["true"]

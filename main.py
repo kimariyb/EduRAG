@@ -74,9 +74,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    initialize_app(args.config)
+    if args.mock:
+        os.environ["EDURAG_API_MOCK"] = "true"
+    config = initialize_app(args.config)
+    from api.deps import configure_application
+
+    configure_application(config)
     initialize_system()
-    run_server(host=args.host, port=args.port, reload=args.reload, mock=args.mock)
+    run_server(host=args.host, port=args.port, reload=args.reload)
 
 
 if __name__ == "__main__":
