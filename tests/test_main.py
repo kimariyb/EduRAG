@@ -97,3 +97,22 @@ def test_main_exports_selected_config_path_for_reload_worker(monkeypatch, tmp_pa
 
     assert os.environ["EDURAG_CONFIG_PATH"] == str(config_path.resolve())
     assert observed["reload"] is True
+    assert observed["config_path"] == config_path.resolve()
+
+
+def test_run_server_hands_config_path_to_reload_process(monkeypatch, tmp_path):
+    config_path = tmp_path / "selected.yaml"
+    observed = {}
+    monkeypatch.delenv("EDURAG_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(
+        main_module.uvicorn,
+        "run",
+        lambda *args, **kwargs: observed.update(
+            config_path=os.environ.get("EDURAG_CONFIG_PATH"),
+            reload=kwargs["reload"],
+        ),
+    )
+
+    main_module.run_server(config_path=config_path, reload=True)
+
+    assert observed == {"config_path": str(config_path.resolve()), "reload": True}

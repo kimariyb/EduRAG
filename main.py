@@ -39,11 +39,16 @@ def run_server(
     port: int = 8000,
     reload: bool = False,
     mock: bool = False,
+    config_path: str | Path | None = None,
 ) -> None:
     """启动 FastAPI 服务（前端由 api.app 静态挂载一并托管）。"""
     if mock:
         os.environ["EDURAG_API_MOCK"] = "true"
         logger.warning("已启用演示模式 (EDURAG_API_MOCK=true)")
+    if config_path is not None:
+        os.environ["EDURAG_CONFIG_PATH"] = str(
+            Path(config_path).expanduser().resolve()
+        )
 
     logger.info("启动服务 http://{}:{}", host, port)
     uvicorn.run(
@@ -83,7 +88,12 @@ def main(argv: list[str] | None = None) -> None:
 
     configure_application(config)
     initialize_system()
-    run_server(host=args.host, port=args.port, reload=args.reload)
+    run_server(
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        config_path=config_path,
+    )
 
 
 if __name__ == "__main__":
