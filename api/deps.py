@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from fastapi import Header, HTTPException, status
 
-from base.config import AppConfig
+from base.config import AppConfig, load_config
 from base.logger import logger
 
 
@@ -37,6 +37,15 @@ def configure_application(config: AppConfig) -> None:
     """Store the selected application configuration before initialization."""
     global _config
     _config = config
+
+
+def _get_application_config() -> AppConfig:
+    """Load the configuration selected by the server parent, if necessary."""
+    global _config
+    if _config is None:
+        config_path = os.environ.get("EDURAG_CONFIG_PATH")
+        _config = load_config(config_path) if config_path else load_config()
+    return _config
 
 
 def _mock_enabled() -> bool:
@@ -117,9 +126,7 @@ def _create_system() -> None:
     try:
         from core.system import EducationQASystem
 
-        if _config is None:
-            raise RuntimeError("application configuration is not configured")
-        _system = EducationQASystem.from_config(_config)
+        _system = EducationQASystem.from_config(_get_application_config())
         _is_mock = False
         _init_error = None
         logger.info("EducationQASystem initialized for API server")
@@ -168,8 +175,13 @@ def _admin_token() -> str | None:
 def require_admin(authorization: str | None = Header(default=None)) -> None:
     """Require the configured Bearer token for FAQ mutations."""
     token = _admin_token()
-    expected = f"Bearer {token}" if token else ""
-    if not authorization or not token or not hmac.compare_digest(authorization, expected):
+    authorized = False
+    if isinstance(authorization, str) and isinstance(token, str) and token:
+        try:
+            authorized = hmac.compare_digest(authorization, f"Bearer {token}")
+        except TypeError:
+            authorized = False
+    if not authorized:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Administrator authorization is required",

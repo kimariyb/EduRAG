@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
 import api.deps as deps
 from api.app import app
@@ -83,6 +84,30 @@ def test_production_backend_failure_returns_503(api_runtime, monkeypatch):
     assert response.status_code == 503
 
 
+def test_reload_worker_loads_selected_config_from_environment(
+    api_runtime, monkeypatch, tmp_path
+):
+    config_path = tmp_path / "selected.yaml"
+    config_path.write_text(
+        "mysql:\n  host: reload-db\nredis: {}\nlog: {}\n",
+        encoding="utf-8",
+    )
+    captured = []
+
+    class CapturingSystem:
+        @classmethod
+        def from_config(cls, config):
+            captured.append(config)
+            return cls()
+
+    monkeypatch.setattr(core_system, "EducationQASystem", CapturingSystem)
+    monkeypatch.setenv("EDURAG_CONFIG_PATH", str(config_path))
+
+    api_runtime.ensure_system()
+
+    assert captured[0].mysql.host == "reload-db"
+
+
 def test_demo_mode_requires_explicit_flag_and_identifies_mock(mock_client):
     response = mock_client.post("/api/qa/ask", json={"query": "hello"})
 
@@ -124,6 +149,44 @@ def test_stream_validation_returns_http_400(client):
     response = client.post("/api/qa/ask/stream", json={"query": "   "})
 
     assert response.status_code == 400
+
+
+def test_sync_backend_error_returns_http_503(api_runtime):
+    class FailingSystem(FakeSystem):
+        def query(self, query, source_filter=None, session_id=None):
+            raise RuntimeError("backend unavailable")
+
+    api_runtime._system = FailingSystem()
+
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        response = test_client.post("/api/qa/ask", json={"query": "hello"})
+
+    assert response.status_code == 503
+
+
+def test_initial_stream_backend_error_returns_http_503(api_runtime):
+    class FailingSystem(FakeSystem):
+        def stream_query(self, query, source_filter=None, session_id=None):
+            raise RuntimeError("backend unavailable")
+
+    api_runtime._system = FailingSystem()
+
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        response = test_client.post("/api/qa/ask/stream", json={"query": "hello"})
+
+    assert response.status_code == 503
+
+
+@pytest.mark.parametrize("authorization", ["Bearer tést", b"Bearer token"])
+def test_faq_auth_rejects_malformed_authorization_without_raising(
+    monkeypatch, authorization
+):
+    monkeypatch.setenv("EDURAG_ADMIN_TOKEN", "token")
+
+    with pytest.raises(HTTPException) as exc_info:
+        deps.require_admin(authorization=authorization)
+
+    assert exc_info.value.status_code == 401
 
 
 def test_faq_validation_and_pagination_bounds(client, monkeypatch):

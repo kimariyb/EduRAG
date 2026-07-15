@@ -28,6 +28,9 @@ def ask(req: AskRequest, system=Depends(get_system)):
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Answer query failed")
+        raise HTTPException(status_code=503, detail="问答后端不可用") from exc
     return AskResponse(
         session_id=result.session_id,
         source=result.source,
@@ -47,6 +50,9 @@ def ask_stream(req: AskRequest, system=Depends(get_system)):
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Answer stream setup failed")
+        raise HTTPException(status_code=503, detail="问答后端不可用") from exc
 
     def event_stream() -> Iterator[str]:
         try:

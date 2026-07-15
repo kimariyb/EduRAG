@@ -78,3 +78,22 @@ def test_run_server_sets_the_explicit_mock_gate(monkeypatch):
     main_module.run_server(mock=True)
 
     assert observed["mock_enabled"] == "true"
+
+
+def test_main_exports_selected_config_path_for_reload_worker(monkeypatch, tmp_path):
+    config_path = tmp_path / "selected.yaml"
+    configured = object()
+    observed = {}
+    monkeypatch.delenv("EDURAG_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(main_module, "initialize_app", lambda path: configured)
+    monkeypatch.setattr(main_module, "initialize_system", lambda: None)
+    monkeypatch.setattr(
+        main_module,
+        "run_server",
+        lambda **kwargs: observed.update(kwargs),
+    )
+
+    main_module.main(["--config", str(config_path), "--reload"])
+
+    assert os.environ["EDURAG_CONFIG_PATH"] == str(config_path.resolve())
+    assert observed["reload"] is True

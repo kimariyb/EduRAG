@@ -6,7 +6,7 @@ from pathlib import Path
 
 import uvicorn
 
-from base.config import AppConfig, load_config
+from base.config import AppConfig, DEFAULT_CONFIG_PATH, load_config
 from base.logger import logger, setup_logger
 
 
@@ -76,7 +76,9 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.mock:
         os.environ["EDURAG_API_MOCK"] = "true"
-    config = initialize_app(args.config)
+    config_path = Path(args.config or DEFAULT_CONFIG_PATH).expanduser().resolve()
+    os.environ["EDURAG_CONFIG_PATH"] = str(config_path)
+    config = initialize_app(config_path)
     from api.deps import configure_application
 
     configure_application(config)
