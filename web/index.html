@@ -1,61 +1,114 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>EduRAG · 教育问答系统</title>
+  <meta name="theme-color" content="#f7f9fc" />
+  <title>EduRAG · Learning workspace</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <div class="app">
-    <aside class="sidebar">
+  <div class="app-shell">
+    <button id="drawer-backdrop" class="drawer-backdrop" type="button" hidden aria-label="Close navigation"></button>
+
+    <nav id="workspace-nav" class="sidebar" aria-label="Workspace navigation">
       <div class="brand">
-        <div class="brand-mark">E</div>
-        <div class="brand-text">
+        <span class="brand-mark" aria-hidden="true">E</span>
+        <span class="brand-copy">
           <strong>EduRAG</strong>
-          <span>教育问答系统</span>
+          <span>Learning workspace</span>
+        </span>
+        <span id="status-dot" class="status-dot" aria-hidden="true"></span>
+      </div>
+
+      <button id="new-chat" class="button button-primary" type="button">
+        <span aria-hidden="true">+</span>
+        New conversation
+      </button>
+
+      <section class="nav-section" aria-labelledby="sessions-heading">
+        <div class="section-heading">
+          <h2 id="sessions-heading">Recent sessions</h2>
+          <span id="session-count" class="count" aria-label="0 saved sessions">0</span>
         </div>
-        <span id="status-dot" class="status-dot" title="服务状态"></span>
-      </div>
+        <ul id="history-list" class="nav-list" aria-label="Saved conversations"></ul>
+      </section>
 
-      <button id="new-chat" class="btn-new">+ 新建对话</button>
-
-      <div class="panel">
-        <h3>历史会话</h3>
-        <ul id="history-list" class="list"></ul>
-      </div>
-
-      <div class="panel">
-        <h3>常见问题</h3>
-        <ul id="faq-list" class="list"></ul>
-      </div>
-
-      <div class="sidebar-foot">
-        <span id="mode-label" class="mode-label">连接中…</span>
-      </div>
-    </aside>
-
-    <main class="chat">
-      <header class="chat-header">
-        <div>
-          <h2>智能答疑助手</h2>
-          <p id="session-hint">会话 ID：—</p>
+      <section class="nav-section nav-section-grow" aria-labelledby="faq-heading">
+        <div class="section-heading">
+          <h2 id="faq-heading">Frequently asked</h2>
+          <span class="section-hint">Use as a prompt</span>
         </div>
-        <button id="clear-chat" class="btn-ghost">清空对话</button>
+        <ul id="faq-list" class="nav-list" aria-label="Frequently asked questions"></ul>
+      </section>
+
+      <div class="sidebar-footer">
+        <span class="privacy-dot" aria-hidden="true"></span>
+        Session answers stay on the server; this device saves titles only.
+      </div>
+    </nav>
+
+    <main class="workspace">
+      <header class="workspace-header">
+        <div class="header-leading">
+          <button
+            id="nav-toggle"
+            class="icon-button nav-toggle"
+            type="button"
+            aria-controls="workspace-nav"
+            aria-expanded="false"
+            aria-label="Open navigation"
+          >
+            <span aria-hidden="true">☰</span>
+          </button>
+          <div>
+            <p class="eyebrow">STUDY ASSISTANT</p>
+            <h1>Ask, learn, and keep moving.</h1>
+            <p id="session-hint" class="session-hint">New conversation</p>
+          </div>
+        </div>
+        <button id="clear-chat" class="button button-secondary" type="button">Clear chat</button>
       </header>
 
-      <section id="messages" class="messages">
-        <div class="empty-state">
-          <div class="empty-icon">💡</div>
-          <p>你好，我是 EduRAG 答疑助手。</p>
-          <p class="muted">提问会从 FAQ 知识库与 RAG 检索中为你作答。</p>
+      <section id="runtime-status" class="runtime-status is-checking" role="status" aria-live="polite">
+        Checking workspace runtime…
+      </section>
+
+      <section class="workspace-tools" aria-label="Conversation tools">
+        <div class="source-control">
+          <label for="source-filter">Knowledge source</label>
+          <input id="source-filter" name="source_filter" type="text" value="ai" autocomplete="off" />
+          <p>Use the indexed source name. Default: <code>ai</code>.</p>
+        </div>
+        <div class="prompt-library" aria-labelledby="prompt-library-heading">
+          <p id="prompt-library-heading" class="tool-label">Try a study prompt</p>
+          <div class="suggestion-list">
+            <button class="suggestion" type="button" data-prompt="Explain the core ideas of machine learning in simple terms.">Explain a core concept</button>
+            <button class="suggestion" type="button" data-prompt="Create a three-step study plan for learning a difficult topic.">Make a study plan</button>
+            <button class="suggestion" type="button" data-prompt="Quiz me with three questions and explain the answers.">Quiz me on a topic</button>
+          </div>
         </div>
       </section>
 
-      <footer class="composer">
-        <textarea id="input" rows="1" placeholder="输入你的问题，Enter 发送，Shift+Enter 换行…"></textarea>
-        <button id="send" class="btn-send">发送</button>
-      </footer>
+      <section id="messages" class="messages" aria-label="Conversation" aria-live="polite">
+        <div class="empty-state">
+          <span class="empty-state-mark" aria-hidden="true">✦</span>
+          <h2>What would you like to explore?</h2>
+          <p>Ask a focused question, choose a starter prompt, or open a saved session.</p>
+        </div>
+      </section>
+
+      <form id="question-form" class="composer" novalidate>
+        <label class="sr-only" for="input">Your question</label>
+        <textarea id="input" name="query" rows="1" placeholder="Ask about a concept, course, or study task…" autocomplete="off"></textarea>
+        <div class="composer-actions">
+          <p class="composer-hint"><kbd>Enter</kbd> send <span aria-hidden="true">·</span> <kbd>Shift</kbd> + <kbd>Enter</kbd> new line</p>
+          <button id="send" class="button button-primary send-button" type="submit" aria-busy="false">
+            <span class="send-label">Send</span>
+            <span class="send-icon" aria-hidden="true">↑</span>
+          </button>
+        </div>
+      </form>
     </main>
   </div>
 

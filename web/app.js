@@ -1,29 +1,48 @@
-/* EduRAG frontend: chat UI with streaming answers and FAQ management. */
+// Manual acceptance: desktop rail + workspace; mobile drawer; light contrast;
+// keyboard send; clear focus ring; demo warning; suggested prompts; source chips;
+// streaming response; sync fallback; session history; FAQ prompt insertion.
 (() => {
   "use strict";
 
-  const $ = (sel) => document.querySelector(sel);
+  const SESSION_STORAGE_KEY = "edurag.session-metadata.v1";
+  const DEFAULT_SOURCE_FILTER = "ai";
+  const $ = (selector) => document.querySelector(selector);
   const messagesEl = $("#messages");
   const inputEl = $("#input");
+  const formEl = $("#question-form");
   const sendEl = $("#send");
+  const sourceFilterEl = $("#source-filter");
   const historyListEl = $("#history-list");
   const faqListEl = $("#faq-list");
   const sessionHintEl = $("#session-hint");
+  const sessionCountEl = $("#session-count");
   const statusDotEl = $("#status-dot");
-  const modeLabelEl = $("#mode-label");
+  const runtimeStatusEl = $("#runtime-status");
+  const navEl = $("#workspace-nav");
+  const navToggleEl = $("#nav-toggle");
+  const drawerBackdropEl = $("#drawer-backdrop");
 
   let sessionId = newSessionId();
-  const sessions = new Map(); // id -> { id, title }
+  let isSending = false;
+  const sessions = new Map(loadSessionMetadata().map((session) => [session.id, session]));
 
   const SOURCE_META = {
-    sql: { label: "FAQ 命中", cls: "sql" },
-    rag: { label: "知识库检索", cls: "rag" },
-    mock: { label: "演示模式", cls: "mock" },
-    err: { label: "出错了", cls: "err" },
+    sql: { label: "FAQ match", className: "source-sql" },
+    rag: { label: "Knowledge retrieval", className: "source-rag" },
+    mock: { label: "Demo response", className: "source-mock" },
+    history: { label: "Saved response", className: "source-history" },
+    err: { label: "Server error", className: "source-error" },
   };
 
   function newSessionId() {
-    return (crypto.randomUUID && crypto.randomUUID()) || "s-" + Math.random().toString(36).slice(2);
+    return (crypto.randomUUID && crypto.randomUUID()) || `s-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function makeElement(tagName, className, text) {
+    const element = document.createElement(tagName);
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+    return element;
   }
 
   function scrollToBottom() {
@@ -32,294 +51,427 @@
 
   function setSession(id) {
     sessionId = id;
-    sessionHintEl.textContent = "会话 ID：" + id;
+    const saved = sessions.get(id);
+    sessionHintEl.textContent = saved ? `Session: ${saved.title}` : "New conversation";
+    renderHistory();
   }
 
-  function clearMessages() {
-    messagesEl.innerHTML = "";
+  function createWelcomeState(message) {
+    const state = makeElement("div", "empty-state");
+    const mark = makeElement("span", "empty-state-mark", "✦");
+    mark.setAttribute("aria-hidden", "true");
+    state.append(mark, makeElement("h2", "", "What would you like to explore?"));
+    state.append(makeElement("p", "", message || "Ask a focused question, choose a starter prompt, or open a saved session."));
+    return state;
+  }
+
+  function clearMessages(message) {
+    messagesEl.replaceChildren(createWelcomeState(message));
+  }
+
+  function removeWelcomeState() {
+    if (messagesEl.querySelector(".empty-state")) messagesEl.replaceChildren();
   }
 
   function addUserMessage(text) {
-    const wrap = document.createElement("div");
-    wrap.className = "msg user";
-    wrap.innerHTML =
-      '<div class="avatar">🧑</div><div class="bubble"></div>';
-    wrap.querySelector(".bubble").textContent = text;
-    messagesEl.appendChild(wrap);
+    removeWelcomeState();
+    const message = makeElement("article", "message message-user");
+    message.setAttribute("aria-label", "Your question");
+    const label = makeElement("p", "message-label", "You");
+    const bubble = makeElement("div", "message-bubble");
+    bubble.textContent = text;
+    message.append(label, bubble);
+    messagesEl.append(message);
     scrollToBottom();
   }
 
   function addAssistantPlaceholder() {
-    const wrap = document.createElement("div");
-    wrap.className = "msg assistant";
-    wrap.innerHTML =
-      '<div class="avatar">🤖</div>' +
-      '<div class="bubble"><div class="meta"></div>' +
-      '<div class="typing"><span></span><span></span><span></span></div></div>';
-    messagesEl.appendChild(wrap);
+    removeWelcomeState();
+    const message = makeElement("article", "message message-assistant");
+    message.setAttribute("aria-label", "EduRAG response");
+    const header = makeElement("div", "assistant-header");
+    header.append(makeElement("p", "message-label", "EduRAG"));
+    const bubble = makeElement("div", "message-bubble");
+    const typing = makeElement("div", "typing-indicator");
+    typing.setAttribute("aria-label", "Thinking");
+    for (let index = 0; index < 3; index += 1) typing.append(makeElement("span"));
+    bubble.append(typing);
+    message.append(header, bubble);
+    messagesEl.append(message);
     scrollToBottom();
-    return wrap;
+    return message;
   }
 
-  function setBadge(wrap, source) {
+  function getAssistantContent(message) {
+    const bubble = message.querySelector(".message-bubble");
+    let content = bubble.querySelector(".message-content");
+    if (!content) {
+      content = makeElement("div", "message-content");
+      bubble.querySelector(".typing-indicator")?.remove();
+      bubble.append(content);
+    }
+    return content;
+  }
+
+  function setSourceChip(message, source) {
     const meta = SOURCE_META[source] || SOURCE_META.err;
-    const metaEl = wrap.querySelector(".meta");
-    metaEl.innerHTML = `<span class="badge ${meta.cls}">${meta.label}</span>`;
+    const header = message.querySelector(".assistant-header");
+    header.querySelector(".source-chip")?.remove();
+    const chip = makeElement("span", `source-chip ${meta.className}`, meta.label);
+    chip.title = `Answer source: ${meta.label}`;
+    header.append(chip);
   }
 
-  function finishAssistant(wrap, text, source) {
-    const bubble = wrap.querySelector(".bubble");
-    setBadge(wrap, source);
-    let content = bubble.querySelector(".content");
-    if (!content) {
-      content = document.createElement("div");
-      content.className = "content";
-      bubble.appendChild(content);
-    }
-    bubble.querySelector(".typing")?.remove();
-    content.textContent = text;
+  function appendToken(message, token) {
+    const content = getAssistantContent(message);
+    content.textContent += String(token || "");
     scrollToBottom();
   }
 
-  function appendToken(wrap, token) {
-    const bubble = wrap.querySelector(".bubble");
-    bubble.querySelector(".typing")?.remove();
-    let content = bubble.querySelector(".content");
-    if (!content) {
-      content = document.createElement("div");
-      content.className = "content";
-      bubble.appendChild(content);
-    }
-    content.textContent += token;
+  function finishAssistant(message, text, source) {
+    setSourceChip(message, source);
+    const content = getAssistantContent(message);
+    content.textContent = String(text || "");
     scrollToBottom();
   }
 
-  function showError(wrap, message) {
-    finishAssistant(wrap, message, "err");
+  function appendAssistantError(message) {
+    setSourceChip(message, "err");
+    const bubble = message.querySelector(".message-bubble");
+    const notice = makeElement("p", "stream-error", "Answer generation failed.");
+    bubble.append(notice);
+    scrollToBottom();
+  }
+
+  function showError(message, text) {
+    finishAssistant(message, text || "We could not complete that request. Please try again later.", "err");
+  }
+
+  function truncateTitle(text) {
+    const compact = String(text).replace(/\s+/g, " ").trim();
+    return compact.length > 36 ? `${compact.slice(0, 33)}…` : compact || "Untitled conversation";
+  }
+
+  function loadSessionMetadata() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) || "[]");
+      if (!Array.isArray(stored)) return [];
+      return stored
+        .filter((session) => session && typeof session.id === "string" && typeof session.title === "string")
+        .map((session) => ({ id: session.id, title: session.title, updatedAt: Number(session.updatedAt) || 0 }))
+        .slice(0, 20);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function persistSessions() {
+    const metadata = [...sessions.values()]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, 20);
+    try {
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(metadata));
+    } catch (_) {
+      // Browsing can continue if storage is unavailable.
+    }
   }
 
   function rememberSession(id, title) {
-    if (!sessions.has(id)) {
-      sessions.set(id, { id, title: title || "新对话" });
-      renderHistory();
-    } else if (title) {
-      sessions.get(id).title = title;
-      renderHistory();
-    }
+    if (!id) return;
+    const current = sessions.get(id);
+    sessions.set(id, {
+      id,
+      title: title ? truncateTitle(title) : current?.title || "Untitled conversation",
+      updatedAt: Date.now(),
+    });
+    persistSessions();
+    renderHistory();
   }
 
   function renderHistory() {
-    historyListEl.innerHTML = "";
-    if (sessions.size === 0) {
-      historyListEl.innerHTML = '<li class="empty">暂无历史会话</li>';
+    historyListEl.replaceChildren();
+    const ordered = [...sessions.values()].sort((left, right) => right.updatedAt - left.updatedAt);
+    sessionCountEl.textContent = String(ordered.length);
+    sessionCountEl.setAttribute("aria-label", `${ordered.length} saved sessions`);
+    if (!ordered.length) {
+      const item = makeElement("li", "empty-list", "No saved sessions yet.");
+      historyListEl.append(item);
       return;
     }
-    for (const s of sessions.values()) {
-      const li = document.createElement("li");
-      li.textContent = s.title;
-      li.title = s.id;
-      li.addEventListener("click", () => loadSession(s.id));
-      historyListEl.appendChild(li);
+    for (const session of ordered) {
+      const item = document.createElement("li");
+      const button = makeElement("button", "nav-list-button", session.title);
+      button.type = "button";
+      button.title = `Open session ${session.title}`;
+      if (session.id === sessionId) button.setAttribute("aria-current", "page");
+      button.addEventListener("click", () => loadSession(session.id));
+      item.append(button);
+      historyListEl.append(item);
     }
   }
 
   async function loadSession(id) {
     setSession(id);
-    clearMessages();
+    clearMessages("Loading this saved conversation…");
+    closeNavigation();
     try {
-      const res = await fetch(`/api/qa/sessions/${encodeURIComponent(id)}/history`);
-      if (!res.ok) return;
-      const data = await res.json();
-      if (!data.history || data.history.length === 0) return;
-      for (const turn of data.history) {
-        addUserMessage(turn.question);
-        const wrap = addAssistantPlaceholder();
-        finishAssistant(wrap, turn.answer, "sql");
+      const response = await fetch(`/api/qa/sessions/${encodeURIComponent(id)}/history`);
+      if (!response.ok) throw new Error("history unavailable");
+      const data = await response.json();
+      const history = Array.isArray(data.history) ? data.history : [];
+      if (!history.length) {
+        clearMessages("This session has no messages yet.");
+        return;
+      }
+      messagesEl.replaceChildren();
+      for (const turn of history) {
+        addUserMessage(turn.question || "");
+        const message = addAssistantPlaceholder();
+        finishAssistant(message, turn.answer || "", "history");
       }
     } catch (_) {
-      /* ignore */
+      clearMessages("This saved session could not be loaded. Please try again.");
     }
   }
 
   async function loadFaq() {
+    faqListEl.replaceChildren();
     try {
-      const res = await fetch("/api/faq?limit=30");
-      if (!res.ok) return;
-      const data = await res.json();
-      faqListEl.innerHTML = "";
-      const items = data.items || [];
-      if (items.length === 0) {
-        faqListEl.innerHTML = '<li class="empty">暂无常见问题</li>';
+      const response = await fetch("/api/faq?limit=30");
+      if (!response.ok) throw new Error("FAQ unavailable");
+      const data = await response.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      if (!items.length) {
+        faqListEl.append(makeElement("li", "empty-list", "No FAQ prompts available."));
         return;
       }
-      for (const f of items) {
-        const li = document.createElement("li");
-        li.innerHTML = `${escapeHtml(f.question)}<span class="sub">${
-          escapeHtml(f.subject || "通用")
-        }</span>`;
-        li.title = "点击填入输入框";
-        li.addEventListener("click", () => {
-          inputEl.value = f.question;
+      for (const faq of items) {
+        const item = document.createElement("li");
+        const button = makeElement("button", "nav-list-button faq-button");
+        const question = makeElement("span", "faq-question", String(faq.question || "Untitled question"));
+        const subject = makeElement("span", "faq-subject", String(faq.subject || "General"));
+        button.type = "button";
+        button.title = "Place this question in the composer";
+        button.append(question, subject);
+        button.addEventListener("click", () => {
+          inputEl.value = question.textContent;
+          autoGrow();
           inputEl.focus();
+          closeNavigation();
         });
-        faqListEl.appendChild(li);
+        item.append(button);
+        faqListEl.append(item);
       }
     } catch (_) {
-      /* ignore */
+      faqListEl.append(makeElement("li", "empty-list", "FAQ prompts are unavailable."));
     }
   }
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-    }[c]));
+  function updateRuntimeStatus(text, status) {
+    runtimeStatusEl.textContent = text;
+    runtimeStatusEl.className = `runtime-status ${status}`;
   }
 
   async function checkHealth() {
     try {
-      const res = await fetch("/health");
-      const data = await res.json();
-      const ok = data.ready && data.status === "ok";
-      statusDotEl.className = "status-dot " + (ok ? "ok" : "bad");
-      modeLabelEl.textContent = data.mock
-        ? "演示模式（内存存储，重启清空）"
-        : "已连接真实后端";
-      modeLabelEl.title = data.mock
-        ? "未检测到 MySQL/Redis/Milvus/LLM 等后端，已使用内置演示数据。"
-        : "已连接 EducationQASystem 真实后端。";
+      const response = await fetch("/health");
+      const data = await response.json();
+      const healthy = response.ok && data.ready && data.status === "ok";
+      statusDotEl.className = `status-dot ${healthy ? "is-ready" : "is-unavailable"}`;
+      if (data.mock) {
+        updateRuntimeStatus("Demo mode is active. Answers use sample data and server-side chat history resets when the server restarts.", "is-demo");
+      } else if (healthy) {
+        updateRuntimeStatus("Live learning service connected. Your request will use the configured FAQ and knowledge sources.", "is-ready");
+      } else {
+        updateRuntimeStatus("The learning service is unavailable. You can still review locally saved session titles.", "is-unavailable");
+      }
     } catch (_) {
-      statusDotEl.className = "status-dot bad";
-      modeLabelEl.textContent = "无法连接服务";
+      statusDotEl.className = "status-dot is-unavailable";
+      updateRuntimeStatus("The learning service is unavailable. Check that the server is running and try again.", "is-unavailable");
     }
   }
 
-  async function sendMessage(text) {
-    if (!text.trim()) return;
-    addUserMessage(text);
-    rememberSession(sessionId, text.slice(0, 22));
-    const wrap = addAssistantPlaceholder();
-    setSession(sessionId);
+  function requestBody(text) {
+    return JSON.stringify({
+      query: text,
+      session_id: sessionId,
+      source_filter: sourceFilterEl.value.trim() || DEFAULT_SOURCE_FILTER,
+    });
+  }
 
-    const body = JSON.stringify({ query: text, session_id: sessionId });
+  async function sendMessage(text) {
+    addUserMessage(text);
+    rememberSession(sessionId, text);
+    setSession(sessionId);
+    const message = addAssistantPlaceholder();
+    const body = requestBody(text);
+    const streamState = { tokenReceived: false, done: false, serverError: false };
 
     try {
-      const res = await fetch("/api/qa/ask/stream", {
+      const response = await fetch("/api/qa/ask/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
       });
-      if (!res.ok || !res.body) throw new Error("stream failed");
-      await consumeStream(res.body, wrap);
+      if (!response.ok || !response.body) throw new Error("stream unavailable");
+      await consumeStream(response.body, message, streamState);
+      if (streamState.serverError) return;
+      if (!streamState.done) throw new Error("stream ended unexpectedly");
     } catch (_) {
-      // Fallback to non-streaming endpoint.
-      try {
-        const res2 = await fetch("/api/qa/ask", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body,
-        });
-        const data = await res2.json();
-        setSession(data.session_id);
-        rememberSession(data.session_id, text.slice(0, 22));
-        finishAssistant(wrap, data.answer, data.source);
-      } catch (err) {
-        showError(wrap, "请求失败，请确认服务已启动。");
+      if (streamState.tokenReceived) {
+        appendAssistantError(message);
+        return;
       }
+      await requestSyncFallback(body, message, text);
     }
   }
 
-  async function consumeStream(body, wrap) {
+  async function requestSyncFallback(body, message, title) {
+    try {
+      const response = await fetch("/api/qa/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      if (!response.ok) throw new Error("fallback unavailable");
+      const data = await response.json();
+      setSession(data.session_id || sessionId);
+      rememberSession(data.session_id || sessionId, title);
+      finishAssistant(message, data.answer || "", data.source || "rag");
+    } catch (_) {
+      showError(message, "We could not complete that request. Please try again later.");
+    }
+  }
+
+  async function consumeStream(body, message, state) {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    let currentSource = "rag";
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      let idx;
-      while ((idx = buffer.indexOf("\n\n")) !== -1) {
-        const raw = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        const dataLine = raw.split("\n").find((l) => l.startsWith("data:"));
-        if (!dataLine) continue;
-        let payload;
-        try {
-          payload = JSON.parse(dataLine.slice(5).trim());
-        } catch (_) {
-          continue;
-        }
-        handleEvent(payload, wrap, (s) => (currentSource = s));
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const event = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        handleSseEvent(event, message, state);
+        boundary = buffer.indexOf("\n\n");
       }
     }
+    buffer += decoder.decode();
+    if (buffer.trim()) handleSseEvent(buffer, message, state);
   }
 
-  function handleEvent(payload, wrap, setSource) {
+  function handleSseEvent(event, message, state) {
+    const dataLine = event.split("\n").find((line) => line.startsWith("data:"));
+    if (!dataLine) return;
+    let payload;
+    try {
+      payload = JSON.parse(dataLine.slice(5).trim());
+    } catch (_) {
+      return;
+    }
     switch (payload.type) {
       case "meta":
-        setSession(payload.session_id);
-        setSource(payload.source);
-        setBadge(wrap, payload.source);
-        rememberSession(payload.session_id);
+        if (payload.session_id) {
+          setSession(payload.session_id);
+          rememberSession(payload.session_id);
+        }
+        setSourceChip(message, payload.source || "rag");
         break;
       case "token":
-        appendToken(wrap, payload.content);
+        state.tokenReceived = true;
+        appendToken(message, payload.content);
         break;
       case "done":
+        state.done = true;
         break;
       case "error":
-        showError(wrap, payload.message || "生成失败");
+        state.serverError = true;
+        if (state.tokenReceived) appendAssistantError(message);
+        else showError(message, "Answer generation failed.");
+        break;
+      default:
         break;
     }
   }
 
-  // ---------- events ----------
+  function setSending(sending) {
+    isSending = sending;
+    sendEl.disabled = sending;
+    sendEl.setAttribute("aria-busy", String(sending));
+    sendEl.querySelector(".send-label").textContent = sending ? "Sending" : "Send";
+  }
+
   function submit() {
     const text = inputEl.value.trim();
-    if (!text) return;
+    if (!text || isSending) return;
     inputEl.value = "";
     autoGrow();
-    sendEl.disabled = true;
-    sendMessage(text).finally(() => (sendEl.disabled = false));
+    setSending(true);
+    sendMessage(text).finally(() => setSending(false));
   }
 
   function autoGrow() {
     inputEl.style.height = "auto";
-    inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px";
+    inputEl.style.height = `${Math.min(inputEl.scrollHeight, 180)}px`;
   }
 
-  sendEl.addEventListener("click", submit);
-  inputEl.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
+  function setNavigation(open) {
+    navEl.classList.toggle("is-open", open);
+    drawerBackdropEl.hidden = !open;
+    navToggleEl.setAttribute("aria-expanded", String(open));
+    navToggleEl.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+    document.body.classList.toggle("drawer-open", open);
+  }
+
+  function closeNavigation() {
+    setNavigation(false);
+  }
+
+  formEl.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submit();
+  });
+  inputEl.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
       submit();
     }
   });
   inputEl.addEventListener("input", autoGrow);
-
   $("#new-chat").addEventListener("click", () => {
     setSession(newSessionId());
     clearMessages();
-    messagesEl.innerHTML =
-      '<div class="empty-state"><div class="empty-icon">💡</div>' +
-      "<p>你好，我是 EduRAG 答疑助手。</p>" +
-      '<p class="muted">提问会从 FAQ 知识库与 RAG 检索中为你作答。</p></div>';
+    closeNavigation();
+    inputEl.focus();
   });
-
   $("#clear-chat").addEventListener("click", async () => {
     try {
-      await fetch(`/api/qa/sessions/${encodeURIComponent(sessionId)}`, {
-        method: "DELETE",
-      });
-    } catch (_) {}
-    clearMessages();
+      await fetch(`/api/qa/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    } catch (_) {
+      // The local UI can still return to its empty state.
+    }
+    clearMessages("This conversation has been cleared. Ask a new question when you are ready.");
+    inputEl.focus();
+  });
+  $(".suggestion-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-prompt]");
+    if (!button) return;
+    inputEl.value = button.dataset.prompt || "";
+    autoGrow();
+    submit();
+  });
+  navToggleEl.addEventListener("click", () => setNavigation(!navEl.classList.contains("is-open")));
+  drawerBackdropEl.addEventListener("click", closeNavigation);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && navEl.classList.contains("is-open")) closeNavigation();
   });
 
-  // ---------- init ----------
-  setSession(sessionId);
   renderHistory();
-  checkHealth();
   loadFaq();
+  checkHealth();
   inputEl.focus();
 })();
