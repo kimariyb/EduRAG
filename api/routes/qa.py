@@ -4,6 +4,7 @@ import json
 from typing import Any, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
 from api.deps import get_system
@@ -15,7 +16,7 @@ log = logger.bind(module=__name__)
 
 
 def _sse(payload: dict[str, Any]) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    return f"data: {json.dumps(jsonable_encoder(payload), ensure_ascii=False)}\n\n"
 
 
 @router.post("/ask", response_model=AskResponse)

@@ -517,6 +517,46 @@ def test_rag_system_streaming_yields_english_fallback_on_generation_error():
     ]
 
 
+def test_rag_system_returns_stable_identity_answer_without_calling_llm():
+    class FailingLLM:
+        def __call__(self, prompt):
+            raise AssertionError("identity answers must not call the LLM")
+
+    system = RAGSystem(
+        FakeVectorStore(),
+        FailingLLM(),
+        query_classifier=StaticQueryClassifier(GENERAL_KNOWLEDGE_CATEGORY),
+        strategy_selector=StaticStrategySelector(),
+    )
+
+    assert system.generate_answer("你是谁？") == (
+        "我是 EduRAG，一个面向 IT 教育培训的智能问答助手。"
+        "我可以回答 FAQ、课程与培训咨询，并基于知识库提供相关帮助。"
+    )
+
+
+def test_rag_system_streams_stable_identity_answer_without_calling_llm():
+    class FailingLLM:
+        def __call__(self, prompt):
+            raise AssertionError("identity answers must not call the LLM")
+
+        def stream(self, prompt):
+            raise AssertionError("identity answers must not stream from the LLM")
+            yield
+
+    system = RAGSystem(
+        FakeVectorStore(),
+        FailingLLM(),
+        query_classifier=StaticQueryClassifier(GENERAL_KNOWLEDGE_CATEGORY),
+        strategy_selector=StaticStrategySelector(),
+    )
+
+    assert list(system.generate_answer_stream("你是谁？")) == [
+        "我是 EduRAG，一个面向 IT 教育培训的智能问答助手。"
+        "我可以回答 FAQ、课程与培训咨询，并基于知识库提供相关帮助。"
+    ]
+
+
 def test_rag_system_from_config_uses_rag_settings():
     config = load_config()
     store = FakeVectorStore()

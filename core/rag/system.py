@@ -34,6 +34,19 @@ from core.rag.vector import VectorStore
 
 log = logger.bind(module=__name__)
 LLMCallable = Callable[[str], str]
+_IDENTITY_QUERY = "你是谁"
+_IDENTITY_ANSWER = (
+    "我是 EduRAG，一个面向 IT 教育培训的智能问答助手。"
+    "我可以回答 FAQ、课程与培训咨询，并基于知识库提供相关帮助。"
+)
+
+
+def _get_identity_answer(query: str) -> str | None:
+    """Return the fixed product introduction for a direct identity query."""
+    normalized_query = query.strip().rstrip("。？！!?")
+    if normalized_query == _IDENTITY_QUERY:
+        return _IDENTITY_ANSWER
+    return None
 
 
 @dataclass(frozen=True)
@@ -304,8 +317,18 @@ class RAGSystem:
         """Generate one answer and retain the actual retrieval trace."""
         start = perf_counter()
         log.info("RAG query started: source_filter={}", source_filter)
-        prepared = self._prepare_answer_prompt(query, source_filter)
         try:
+            identity_answer = _get_identity_answer(query)
+            if identity_answer is not None:
+                log.info("Identity query handled without retrieval")
+                return RAGAnswer(
+                    answer=identity_answer,
+                    category=GENERAL_KNOWLEDGE_CATEGORY,
+                    strategy=None,
+                    documents=(),
+                )
+
+            prepared = self._prepare_answer_prompt(query, source_filter)
             try:
                 answer = self.llm(prepared.prompt)
             except Exception:
@@ -340,6 +363,12 @@ class RAGSystem:
         start = perf_counter()
         log.info("RAG streaming query started: source_filter={}", source_filter)
         try:
+            identity_answer = _get_identity_answer(query)
+            if identity_answer is not None:
+                log.info("Streaming identity query handled without retrieval")
+                yield identity_answer
+                return
+
             prepared = self._prepare_answer_prompt(
                 query,
                 source_filter,

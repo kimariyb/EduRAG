@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -219,6 +220,29 @@ def test_started_stream_hides_internal_errors(api_runtime):
     assert response.status_code == 200
     assert "secret backend detail" not in response.text
     assert '"message": "Answer generation failed."' in response.text
+
+
+def test_stream_serializes_datetime_values_in_session_history(api_runtime):
+    class DatetimeHistorySystem(FakeSystem):
+        def get_session_history(self, session_id):
+            return [
+                {
+                    "id": 1,
+                    "session_id": session_id,
+                    "question": "Who are you?",
+                    "answer": "I am EduRAG.",
+                    "created_at": datetime(2026, 7, 15, 19, 27, 40),
+                }
+            ]
+
+    api_runtime._system = DatetimeHistorySystem()
+
+    with TestClient(app) as test_client:
+        response = test_client.post("/api/qa/ask/stream", json={"query": "hello"})
+
+    assert response.status_code == 200
+    assert '"type": "done"' in response.text
+    assert '"created_at": "2026-07-15T19:27:40"' in response.text
 
 
 def test_lifespan_closes_mysql_client(api_runtime):
