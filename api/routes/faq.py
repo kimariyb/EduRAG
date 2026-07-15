@@ -1,22 +1,25 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from api.deps import get_faq_backend, invalidate_faq_cache
+from api.deps import get_faq_backend, invalidate_faq_cache, require_admin
 from api.schemas import FAQCreate, FAQListResponse, FAQUpdate
 
 router = APIRouter(prefix="/api/faq", tags=["faq"])
 
 
 @router.get("", response_model=FAQListResponse)
-def list_faqs(limit: int = 50, offset: int = 0):
+def list_faqs(
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
     backend, _ = get_faq_backend()
     rows = backend.list_faqs(limit=limit, offset=offset)
     return FAQListResponse(items=rows)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-def create_faq(payload: FAQCreate):
+def create_faq(payload: FAQCreate, _: None = Depends(require_admin)):
     backend, _ = get_faq_backend()
     faq_id = backend.insert_faq(
         question=payload.question, answer=payload.answer, subject=payload.subject
@@ -35,7 +38,7 @@ def get_faq(faq_id: int):
 
 
 @router.put("/{faq_id}")
-def update_faq(faq_id: int, payload: FAQUpdate):
+def update_faq(faq_id: int, payload: FAQUpdate, _: None = Depends(require_admin)):
     backend, _ = get_faq_backend()
     try:
         backend.update_faq(
@@ -51,7 +54,7 @@ def update_faq(faq_id: int, payload: FAQUpdate):
 
 
 @router.delete("/{faq_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_faq(faq_id: int):
+def delete_faq(faq_id: int, _: None = Depends(require_admin)):
     backend, _ = get_faq_backend()
     backend.delete_faq(faq_id)
     invalidate_faq_cache()

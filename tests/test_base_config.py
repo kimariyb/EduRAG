@@ -196,6 +196,60 @@ def test_load_config_applies_typed_environment_overrides(monkeypatch):
     assert config.get("eval.quality_threshold") == 5
 
 
+def test_admin_token_is_read_only_from_environment(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+mysql: {}
+redis: {}
+log: {}
+admin_token: yaml-secret
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EDURAG_ADMIN_TOKEN", "admin-secret")
+
+    config = load_config(config_path)
+
+    assert config.admin_token == "admin-secret"
+
+
+def test_admin_token_is_not_loaded_from_yaml(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+mysql: {}
+redis: {}
+log: {}
+admin_token: yaml-secret
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("EDURAG_ADMIN_TOKEN", raising=False)
+
+    config = load_config(config_path)
+
+    assert config.admin_token is None
+
+
+def test_admin_token_is_excluded_from_raw_config(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+mysql: {}
+redis: {}
+log: {}
+admin_token: yaml-secret
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("EDURAG_ADMIN_TOKEN", raising=False)
+
+    config = load_config(config_path)
+
+    assert config.get("admin_token") is None
+
+
 def test_load_config_rejects_invalid_rag_values(tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

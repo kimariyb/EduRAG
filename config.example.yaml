@@ -1,9 +1,13 @@
-# Any value can be overridden with EDURAG_<SECTION>_<FIELD>.
+# Copy this file to config.yaml for a local deployment.
+# Required environment variables: EDURAG_MYSQL_PASSWORD and
+# EDURAG_REDIS_PASSWORD. EDURAG_ADMIN_TOKEN is required to protect
+# administrator endpoints and is intentionally never stored in YAML.
+# Any safe setting below can be overridden with EDURAG_<SECTION>_<FIELD>.
 mysql:
   host: localhost
   port: 3306
   username: root
-  password: "123456"
+  password: ${EDURAG_MYSQL_PASSWORD}
   database: edurag
   charset: utf8mb4
 
@@ -11,7 +15,7 @@ redis:
   host: localhost
   port: 6379
   db: 0
-  password: 123456
+  password: ${EDURAG_REDIS_PASSWORD}
   decode_responses: true
 
 log:
@@ -31,11 +35,10 @@ milvus:
 llm:
   provider: ollama
   model: qwen3.5:4b-mlx
-  # Required by the OpenAI client but ignored by the local Ollama server.
+  # Required by the OpenAI client but ignored by a local Ollama server.
   api_key: ollama
   base_url: http://localhost:11434/v1
   temperature: 0.1
-  # Limit output length and disable thinking for lower response latency.
   max_tokens: 384
   reasoning_effort: none
   stream: true
@@ -48,22 +51,17 @@ rag:
   candidate_m: 2
   customer_service_phone: 400-000-0000
   knowledge_base_path: data/ai_data
-  # Local base model used to train the query classifier.
-  query_base_model: /Users/kimariyb/d/models/huggingface/bert-base-chinese
-  # Directory used to load or save the fine-tuned query classifier.
+  # Relative paths keep the template portable across development machines.
+  query_base_model: models/bert-base-chinese
   query_model_path: core/bert_query_classifier
   query_training_data_path: core/rag/data/finetuning_data.jsonl
-  embedding_model_path: /Users/kimariyb/d/models/huggingface/bge-m3
-  reranker_model_path: /Users/kimariyb/d/models/huggingface/bge-reranker-v2-m3
-  # Shared PyTorch device for embedding, reranking, and query classification.
-  model_device: mps
-  # The installed ModelScope version does not support the MPS device.
+  embedding_model_path: models/bge-m3
+  reranker_model_path: models/bge-reranker-v2-m3
+  model_device: cpu
   segmenter_device: cpu
 
 eval:
-  # A sample passes only when every critique score reaches this value.
   quality_threshold: 4
-  # Maximum model attempts for one sample before it is rejected as an error.
   critique_max_retries: 3
   test_samples_path: eval/data/test_samples.jsonl
   critique_results_path: eval/data/test_samples_critiqued.jsonl
@@ -71,6 +69,5 @@ eval:
   rag_predictions_path: eval/data/rag_predictions.jsonl
   rag_evaluation_path: eval/data/rag_evaluation.jsonl
   rag_summary_path: eval/data/rag_evaluation_summary.json
-  # Keep local Ollama judging sequential to avoid unified-memory pressure.
   ragas_max_workers: 1
   ragas_timeout: 180

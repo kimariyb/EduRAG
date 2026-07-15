@@ -1,6 +1,9 @@
+import os
 from pathlib import Path
 
+from api import deps
 from base.logger import logger
+import main as main_module
 from main import initialize_app
 
 
@@ -40,3 +43,76 @@ log:
     assert config.log.file == str(log_path)
     assert log_path.exists()
     assert "shared logger configured from main" in log_path.read_text(encoding="utf-8")
+
+
+def test_main_sets_mock_mode_before_initializing(monkeypatch):
+    calls = []
+    configured = object()
+    monkeypatch.delenv("EDURAG_API_MOCK", raising=False)
+    monkeypatch.setattr(main_module, "initialize_app", lambda _: configured)
+    monkeypatch.setattr(
+        main_module,
+        "initialize_system",
+        lambda: calls.append(os.environ.get("EDURAG_API_MOCK")),
+    )
+    monkeypatch.setattr(main_module, "run_server", lambda **_: None)
+    monkeypatch.setattr(deps, "_config", None, raising=False)
+
+    main_module.main(["--mock"])
+
+    assert calls == ["true"]
+    assert deps._config is configured
+
+
+def test_run_server_sets_the_explicit_mock_gate(monkeypatch):
+    observed = {}
+    monkeypatch.delenv("EDURAG_API_MOCK", raising=False)
+    monkeypatch.setattr(
+        main_module.uvicorn,
+        "run",
+        lambda *args, **kwargs: observed.update(
+            mock_enabled=os.environ.get("EDURAG_API_MOCK")
+        ),
+    )
+
+    main_module.run_server(mock=True)
+
+    assert observed["mock_enabled"] == "true"
+
+
+def test_main_exports_selected_config_path_for_reload_worker(monkeypatch, tmp_path):
+    config_path = tmp_path / "selected.yaml"
+    configured = object()
+    observed = {}
+    monkeypatch.delenv("EDURAG_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(main_module, "initialize_app", lambda path: configured)
+    monkeypatch.setattr(main_module, "initialize_system", lambda: None)
+    monkeypatch.setattr(
+        main_module,
+        "run_server",
+        lambda **kwargs: observed.update(kwargs),
+    )
+
+    main_module.main(["--config", str(config_path), "--reload"])
+
+    assert os.environ["EDURAG_CONFIG_PATH"] == str(config_path.resolve())
+    assert observed["reload"] is True
+    assert observed["config_path"] == config_path.resolve()
+
+
+def test_run_server_hands_config_path_to_reload_process(monkeypatch, tmp_path):
+    config_path = tmp_path / "selected.yaml"
+    observed = {}
+    monkeypatch.delenv("EDURAG_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(
+        main_module.uvicorn,
+        "run",
+        lambda *args, **kwargs: observed.update(
+            config_path=os.environ.get("EDURAG_CONFIG_PATH"),
+            reload=kwargs["reload"],
+        ),
+    )
+
+    main_module.run_server(config_path=config_path, reload=True)
+
+    assert observed == {"config_path": str(config_path.resolve()), "reload": True}

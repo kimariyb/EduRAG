@@ -109,6 +109,7 @@ class AppConfig:
     llm: LLMConfig
     rag: RAGConfig
     eval: EvalConfig
+    admin_token: str | None
     raw: dict[str, Any]
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -129,6 +130,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppConfig:
         data = yaml.safe_load(file) or {}
     if not isinstance(data, dict):
         raise ConfigError("config file must contain a YAML mapping")
+    data.pop("admin_token", None)
 
     missing_sections = [section for section in REQUIRED_SECTIONS if section not in data]
     if missing_sections:
@@ -168,6 +170,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppConfig:
         llm=llm,
         rag=rag,
         eval=eval_config,
+        admin_token=os.environ.get("EDURAG_ADMIN_TOKEN"),
         raw=normalized,
     )
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import uvicorn
 
-from base.config import AppConfig, load_config
+from base.config import AppConfig, DEFAULT_CONFIG_PATH, load_config
 from base.logger import logger, setup_logger
 
 
@@ -39,11 +39,16 @@ def run_server(
     port: int = 8000,
     reload: bool = False,
     mock: bool = False,
+    config_path: str | Path | None = None,
 ) -> None:
     """启动 FastAPI 服务（前端由 api.app 静态挂载一并托管）。"""
     if mock:
-        os.environ["EDURAG_API_MOCK"] = "1"
-        logger.warning("已启用演示模式 (EDURAG_API_MOCK=1)")
+        os.environ["EDURAG_API_MOCK"] = "true"
+        logger.warning("已启用演示模式 (EDURAG_API_MOCK=true)")
+    if config_path is not None:
+        os.environ["EDURAG_CONFIG_PATH"] = str(
+            Path(config_path).expanduser().resolve()
+        )
 
     logger.info("启动服务 http://{}:{}", host, port)
     uvicorn.run(
@@ -74,9 +79,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    initialize_app(args.config)
+    if args.mock:
+        os.environ["EDURAG_API_MOCK"] = "true"
+    config_path = Path(args.config or DEFAULT_CONFIG_PATH).expanduser().resolve()
+    os.environ["EDURAG_CONFIG_PATH"] = str(config_path)
+    config = initialize_app(config_path)
+    from api.deps import configure_application
+
+    configure_application(config)
     initialize_system()
-    run_server(host=args.host, port=args.port, reload=args.reload, mock=args.mock)
+    run_server(
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        config_path=config_path,
+    )
 
 
 if __name__ == "__main__":

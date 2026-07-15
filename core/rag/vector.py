@@ -193,10 +193,18 @@ class VectorStore:
             log.warning("Skipped vector upsert because document list is empty")
             return
 
-        texts = [document.page_content for document in documents]
+        unique_documents: list[tuple[str, Document]] = []
+        seen_ids: set[str] = set()
+        for document in documents:
+            document_id = self._document_id(document)
+            if document_id not in seen_ids:
+                seen_ids.add(document_id)
+                unique_documents.append((document_id, document))
+
+        texts = [document.page_content for _, document in unique_documents]
         embeddings = self.embedding_function(texts)
         data: list[dict[str, Any]] = []
-        for index, document in enumerate(documents):
+        for index, (document_id, document) in enumerate(unique_documents):
             parent_id = document.metadata.get("parent_id")
             parent_content = document.metadata.get("parent_content")
             if not parent_id or parent_content is None:
@@ -206,7 +214,7 @@ class VectorStore:
 
             data.append(
                 {
-                    "id": self._document_id(document),
+                    "id": document_id,
                     "text": document.page_content,
                     "dense_vector": self._dense_vector(
                         embeddings["dense"][index]

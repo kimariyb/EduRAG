@@ -120,7 +120,11 @@ class FakeStreamingLLM:
 class FakeEmbedding:
     dim = {"dense": 2}
 
+    def __init__(self):
+        self.calls = []
+
     def __call__(self, texts):
+        self.calls.append(texts)
         return {
             "dense": np.array([[index, index + 1] for index in range(len(texts))]),
             "sparse": csr_array(
@@ -584,7 +588,6 @@ def test_system_main_builds_and_runs_complete_workflow(
     inputs = iter(["course question", "exit"])
 
     monkeypatch.setattr(rag_system_module, "load_config", lambda: config)
-    monkeypatch.setattr(rag_system_module, "setup_logger", lambda config: None)
     monkeypatch.setattr(
         rag_system_module,
         "parse_document_from_dir",
@@ -759,6 +762,35 @@ def test_vector_store_upserts_documents_and_reranks_search_results():
     assert VectorStore._source_filter_expression('ai"course') == (
         'source == "ai\\"course"'
     )
+
+
+def test_vector_store_deduplicates_primary_keys_in_one_batch():
+    client = FakeMilvusClient()
+    embedding = FakeEmbedding()
+    store = VectorStore(
+        "knowledge",
+        "localhost",
+        19530,
+        "default",
+        client=client,
+        embedding_function=embedding,
+        reranker=FakeReranker(),
+        auto_prepare=False,
+    )
+    document = Document(
+        page_content="duplicate child",
+        metadata={
+            "id": "child-1",
+            "parent_id": "parent-1",
+            "parent_content": "parent",
+            "source": "ai",
+        },
+    )
+
+    store.add_documents([document, document])
+
+    assert embedding.calls == [[document.page_content]]
+    assert len(client.upsert_calls[0]["data"]) == 1
 
 
 def test_vector_store_disambiguates_duplicate_text_with_chunk_metadata():

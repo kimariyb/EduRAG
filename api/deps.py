@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import hmac
 import os
 import threading
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from fastapi import Header, HTTPException, status
+
+from base.config import AppConfig, load_config
 from base.logger import logger
 
+
+log = logger.bind(module=__name__)
 
 @dataclass
 class _QAResult:
@@ -18,13 +24,32 @@ class _QAResult:
     answer: str
     history: list[dict[str, Any]] = field(default_factory=list)
 
-# Lazy-initialized singleton. Real EducationQASystem requires MySQL / Redis /
-# Milvus / LLM backends; if any of them are unavailable we transparently fall
-# back to an in-memory MockEducationQASystem so the API and frontend stay usable.
+# Lazy-initialized singleton. The in-memory implementation is only available
+# when demo mode is explicitly enabled.
 _lock = threading.Lock()
 _system: Any | None = None
 _init_error: str | None = None
 _is_mock = False
+_config: AppConfig | None = None
+
+
+def configure_application(config: AppConfig) -> None:
+    """Store the selected application configuration before initialization."""
+    global _config
+    _config = config
+
+
+def _get_application_config() -> AppConfig:
+    """Load the configuration selected by the server parent, if necessary."""
+    global _config
+    if _config is None:
+        config_path = os.environ.get("EDURAG_CONFIG_PATH")
+        _config = load_config(config_path) if config_path else load_config()
+    return _config
+
+
+def _mock_enabled() -> bool:
+    return os.environ.get("EDURAG_API_MOCK", "").lower() == "true"
 
 
 def _chunk_text(text: str, size: int = 8) -> list[str]:
@@ -37,6 +62,13 @@ class MockEducationQASystem:
     def __init__(self) -> None:
         self._sessions: dict[str, list[dict[str, Any]]] = {}
         self._counter = 0
+
+    @staticmethod
+    def _validate_query(query: str) -> str:
+        question = query.strip()
+        if not question:
+            raise ValueError("query must not be empty")
+        return question
 
     def _append(self, session_id: str, question: str, answer: str) -> list[dict[str, Any]]:
         self._counter += 1
@@ -51,6 +83,7 @@ class MockEducationQASystem:
         return list(self._sessions[session_id])
 
     def query(self, query: str, source_filter: str | None = None, session_id: str | None = None):
+        query = self._validate_query(query)
         session_id = session_id or str(uuid4())
         answer = (
             f"[演示模式] 针对「{query}」的示例回答。"
@@ -60,6 +93,7 @@ class MockEducationQASystem:
         return _QAResult(session_id, "mock", answer, history)
 
     def stream_query(self, query: str, source_filter: str | None = None, session_id: str | None = None):
+        query = self._validate_query(query)
         session_id = session_id or str(uuid4())
         answer = (
             f"[演示模式] 针对「{query}」的示例回答。"
@@ -83,22 +117,24 @@ class MockEducationQASystem:
 
 def _create_system() -> None:
     global _system, _init_error, _is_mock
-    force_mock = os.environ.get("EDURAG_API_MOCK", "").lower() in {"1", "true", "yes"}
-    if force_mock:
+    if _mock_enabled():
         logger.warning("EDURAG_API_MOCK enabled; using mock QA system")
         _system = MockEducationQASystem()
         _is_mock = True
+        _init_error = None
         return
     try:
         from core.system import EducationQASystem
 
-        _system = EducationQASystem()
+        _system = EducationQASystem.from_config(_get_application_config())
+        _is_mock = False
+        _init_error = None
         logger.info("EducationQASystem initialized for API server")
     except Exception as exc:  # noqa: BLE001
-        logger.warning("EducationQASystem init failed, falling back to mock: {}", exc)
-        _system = MockEducationQASystem()
-        _is_mock = True
-        _init_error = str(exc)
+        _system = None
+        _is_mock = False
+        _init_error = type(exc).__name__
+        log.exception("Education QA system initialization failed")
 
 
 def ensure_system() -> None:
@@ -128,6 +164,29 @@ def get_system_status() -> dict[str, Any]:
         "mock": _is_mock,
         "error": _init_error,
     }
+
+
+def _admin_token() -> str | None:
+    return os.environ.get("EDURAG_ADMIN_TOKEN") or (
+        _config.admin_token if _config is not None else None
+    )
+
+
+def require_admin(authorization: str | None = Header(default=None)) -> None:
+    """Require the configured Bearer token for FAQ mutations."""
+    token = _admin_token()
+    authorized = False
+    if isinstance(authorization, str) and isinstance(token, str) and token:
+        try:
+            authorized = hmac.compare_digest(authorization, f"Bearer {token}")
+        except TypeError:
+            authorized = False
+    if not authorized:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Administrator authorization is required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 class InMemoryFAQStore:
@@ -189,8 +248,10 @@ def get_faq_backend() -> tuple[Any, bool]:
     """
     system = _get_system_or_none()
     client = getattr(system, "mysql_client", None) if system is not None else None
-    if client is None:
+    if client is None and _is_mock:
         return _faq_store, True
+    if client is None:
+        raise HTTPException(status_code=503, detail="MySQL backend is unavailable")
     return client, False
 
 
