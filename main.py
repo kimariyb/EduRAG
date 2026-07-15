@@ -42,8 +42,8 @@ def run_server(
 ) -> None:
     """启动 FastAPI 服务（前端由 api.app 静态挂载一并托管）。"""
     if mock:
-        os.environ["EDURAG_API_MOCK"] = "1"
-        logger.warning("已启用演示模式 (EDURAG_API_MOCK=1)")
+        os.environ["EDURAG_API_MOCK"] = "true"
+        logger.warning("已启用演示模式 (EDURAG_API_MOCK=true)")
 
     logger.info("启动服务 http://{}:{}", host, port)
     uvicorn.run(

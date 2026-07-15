@@ -62,3 +62,19 @@ def test_main_sets_mock_mode_before_initializing(monkeypatch):
 
     assert calls == ["true"]
     assert deps._config is configured
+
+
+def test_run_server_sets_the_explicit_mock_gate(monkeypatch):
+    observed = {}
+    monkeypatch.delenv("EDURAG_API_MOCK", raising=False)
+    monkeypatch.setattr(
+        main_module.uvicorn,
+        "run",
+        lambda *args, **kwargs: observed.update(
+            mock_enabled=os.environ.get("EDURAG_API_MOCK")
+        ),
+    )
+
+    main_module.run_server(mock=True)
+
+    assert observed["mock_enabled"] == "true"
