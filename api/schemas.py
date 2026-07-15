@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AskRequest(BaseModel):
@@ -38,11 +38,37 @@ class FAQCreate(BaseModel):
     answer: str = Field(..., min_length=1)
     subject: str | None = None
 
+    @field_validator("question", "answer", "subject")
+    @classmethod
+    def strip_and_require_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("FAQ fields must not be blank")
+        return value
+
 
 class FAQUpdate(BaseModel):
     question: str | None = None
     answer: str | None = None
     subject: str | None = None
+
+    @field_validator("question", "answer", "subject")
+    @classmethod
+    def strip_and_require_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("FAQ fields must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def require_a_field(self) -> "FAQUpdate":
+        if self.question is None and self.answer is None and self.subject is None:
+            raise ValueError("at least one FAQ field must be supplied")
+        return self
 
 
 class FAQListResponse(BaseModel):

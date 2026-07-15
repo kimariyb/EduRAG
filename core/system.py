@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from base.config import AppConfig
 from base.logger import logger
+from core.sql.cache import RedisClient
 from core.rag.system import RAGSystem
 from core.sql.db import MySQLClient
 from core.sql.system import MySqlQASystem
@@ -40,6 +42,22 @@ class EducationQASystem:
         self.mysql_client = mysql_client or self.sql_system.mysql_client
         self.rag_system = rag_system or RAGSystem.from_config()
         self.init_conversation_table()
+
+    @classmethod
+    def from_config(cls, config: AppConfig) -> "EducationQASystem":
+        """Construct every production dependency from one application config."""
+        mysql_client = MySQLClient(config)
+        redis_client = RedisClient(config)
+        sql_system = MySqlQASystem(
+            mysql_client=mysql_client,
+            redis_client=redis_client,
+        )
+        rag_system = RAGSystem.from_config(config)
+        return cls(
+            sql_system=sql_system,
+            rag_system=rag_system,
+            mysql_client=mysql_client,
+        )
 
     def init_conversation_table(self) -> None:
         self.mysql_client.create_conversation_table()
