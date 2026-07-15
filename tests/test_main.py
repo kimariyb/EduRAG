@@ -47,20 +47,18 @@ log:
 
 def test_main_sets_mock_mode_before_initializing(monkeypatch):
     calls = []
+    configured = object()
     monkeypatch.delenv("EDURAG_API_MOCK", raising=False)
+    monkeypatch.setattr(main_module, "initialize_app", lambda _: configured)
     monkeypatch.setattr(
         main_module,
         "initialize_system",
         lambda: calls.append(os.environ.get("EDURAG_API_MOCK")),
     )
     monkeypatch.setattr(main_module, "run_server", lambda **_: None)
-    monkeypatch.setattr(
-        deps,
-        "configure_application",
-        lambda config: None,
-        raising=False,
-    )
+    monkeypatch.setattr(deps, "_config", None, raising=False)
 
     main_module.main(["--mock"])
 
     assert calls == ["true"]
+    assert deps._config is configured

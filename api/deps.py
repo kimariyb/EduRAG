@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from base.config import AppConfig
 from base.logger import logger
 
 
@@ -25,6 +26,13 @@ _lock = threading.Lock()
 _system: Any | None = None
 _init_error: str | None = None
 _is_mock = False
+_config: AppConfig | None = None
+
+
+def configure_application(config: AppConfig) -> None:
+    """Store the selected application configuration before initialization."""
+    global _config
+    _config = config
 
 
 def _chunk_text(text: str, size: int = 8) -> list[str]:

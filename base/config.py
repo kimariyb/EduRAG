@@ -130,6 +130,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppConfig:
         data = yaml.safe_load(file) or {}
     if not isinstance(data, dict):
         raise ConfigError("config file must contain a YAML mapping")
+    data.pop("admin_token", None)
 
     missing_sections = [section for section in REQUIRED_SECTIONS if section not in data]
     if missing_sections:

@@ -232,6 +232,24 @@ admin_token: yaml-secret
     assert config.admin_token is None
 
 
+def test_admin_token_is_excluded_from_raw_config(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+mysql: {}
+redis: {}
+log: {}
+admin_token: yaml-secret
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("EDURAG_ADMIN_TOKEN", raising=False)
+
+    config = load_config(config_path)
+
+    assert config.get("admin_token") is None
+
+
 def test_load_config_rejects_invalid_rag_values(tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
